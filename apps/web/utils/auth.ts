@@ -47,6 +47,8 @@ export const getAuthOptions: (options?: {
   ],
   adapter: PrismaAdapter(prisma),
   session: { strategy: "jwt" },
+  // Trust the host defined in NEXTAUTH_URL, needed for ngrok and other tunneling services
+  trustHost: true,
   // based on: https://authjs.dev/guides/basics/refresh-token-rotation
   // and: https://github.com/nextauthjs/next-auth-refresh-token-example/blob/main/pages/api/auth/%5B...nextauth%5D.js
   callbacks: {
