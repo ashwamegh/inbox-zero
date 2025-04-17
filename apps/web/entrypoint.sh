@@ -1,7 +1,5 @@
 #!/bin/bash
 
-#!/bin/bash
-
 if [ "$NODE_ENV" = "development" ]; then
   pnpm install
   pnpm prisma migrate dev
