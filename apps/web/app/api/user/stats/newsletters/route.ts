@@ -1,19 +1,19 @@
 import { NextResponse } from "next/server";
-import { z } from "zod";
-import { auth } from "@/app/api/auth/[...nextauth]/auth";
-import { withError } from "@/utils/middleware";
-import {
-  filterNewsletters,
-  findAutoArchiveFilter,
-  findNewsletterStatus,
-  getAutoArchiveFilters,
-} from "@/app/api/user/stats/newsletters/helpers";
+import { withEmailProvider } from "@/utils/middleware";
+import { extractEmailAddress } from "@/utils/email";
+import { createScopedLogger } from "@/utils/logger";
 import prisma from "@/utils/prisma";
 import { Prisma } from "@prisma/client";
-import { extractEmailAddress } from "@/utils/email";
+import { z } from "zod";
+import type { EmailProvider } from "@/utils/email/provider";
+import {
+  getAutoArchiveFilters,
+  findNewsletterStatus,
+  findAutoArchiveFilter,
+  filterNewsletters,
+} from "@/app/api/user/stats/newsletters/helpers";
 
-// not sure why this is slow sometimes
-export const maxDuration = 30;
+const logger = createScopedLogger("api/user/stats/newsletters");
 
 const newsletterStatsQuery = z.object({
   limit: z.coerce.number().nullish(),
@@ -31,9 +31,10 @@ const newsletterStatsQuery = z.object({
     .transform((arr) => arr?.filter(Boolean)),
   includeMissingUnsubscribe: z.boolean().optional(),
 });
+
 export type NewsletterStatsQuery = z.infer<typeof newsletterStatsQuery>;
 export type NewsletterStatsResponse = Awaited<
-  ReturnType<typeof getNewslettersTinybird>
+  ReturnType<typeof getEmailMessages>
 >;
 
 function getTypeFilters(types: NewsletterStatsQuery["types"]) {
@@ -66,30 +67,37 @@ function getTypeFilters(types: NewsletterStatsQuery["types"]) {
   };
 }
 
-async function getNewslettersTinybird(
-  options: { ownerEmail: string; userId: string } & NewsletterStatsQuery,
+async function getEmailMessages(
+  options: {
+    emailAccountId: string;
+    emailProvider: EmailProvider;
+  } & NewsletterStatsQuery,
 ) {
+  const { emailAccountId, emailProvider } = options;
   const types = getTypeFilters(options.types);
 
-  const [newsletterCounts, autoArchiveFilters, userNewsletters] =
-    await Promise.all([
-      getNewsletterCounts({
-        ...options,
-        ...types,
-      }),
-      getAutoArchiveFilters(),
-      findNewsletterStatus(options.userId),
-    ]);
+  const [counts, autoArchiveFilters, userNewsletters] = await Promise.all([
+    getNewsletterCounts({
+      ...options,
+      ...types,
+    }),
+    getAutoArchiveFilters(emailProvider),
+    findNewsletterStatus({ emailAccountId }),
+  ]);
 
-  const newsletters = newsletterCounts.map((email: NewsletterCountResult) => {
+  const newsletters = counts.map((email) => {
     const from = extractEmailAddress(email.from);
     return {
       name: from,
       value: email.count,
       inboxEmails: email.inboxEmails,
       readEmails: email.readEmails,
-      lastUnsubscribeLink: email.lastUnsubscribeLink,
-      autoArchived: findAutoArchiveFilter(autoArchiveFilters, from),
+      unsubscribeLink: email.unsubscribeLink,
+      autoArchived: findAutoArchiveFilter(
+        autoArchiveFilters,
+        from,
+        emailProvider,
+      ),
       status: userNewsletters?.find((n) => n.email === from)?.status,
     };
   });
@@ -106,20 +114,20 @@ type NewsletterCountResult = {
   count: number;
   inboxEmails: number;
   readEmails: number;
-  lastUnsubscribeLink: string | null;
+  unsubscribeLink: string | null;
 };
 
 type NewsletterCountRawResult = {
   from: string;
-  count: bigint;
-  inboxEmails: bigint;
-  readEmails: bigint;
-  lastUnsubscribeLink: string | null;
+  count: number;
+  inboxEmails: number;
+  readEmails: number;
+  unsubscribeLink: string | null;
 };
 
 async function getNewsletterCounts(
   options: NewsletterStatsQuery & {
-    userId: string;
+    emailAccountId: string;
     read?: boolean;
     unread?: boolean;
     archived?: boolean;
@@ -162,8 +170,8 @@ async function getNewsletterCounts(
   }
 
   // Always filter by userId
-  whereConditions.push(`"userId" = $${queryParams.length + 1}`);
-  queryParams.push(options.userId);
+  whereConditions.push(`"emailAccountId" = $${queryParams.length + 1}`);
+  queryParams.push(options.emailAccountId);
 
   // Create WHERE clause
   const whereClause = whereConditions.length
@@ -180,18 +188,18 @@ async function getNewsletterCounts(
 
   // Wrap in a subquery so we can use aliases in ORDER BY
   const query = Prisma.sql`
-    WITH newsletter_stats AS (
+    WITH email_message_stats AS (
       SELECT 
         "from",
-        COUNT(*) as "count",
-        SUM(CASE WHEN inbox = true THEN 1 ELSE 0 END) as "inboxEmails",
-        SUM(CASE WHEN read = true THEN 1 ELSE 0 END) as "readEmails",
-        MAX("unsubscribeLink") as "lastUnsubscribeLink"
+        COUNT(*)::int as "count",
+        SUM(CASE WHEN inbox = true THEN 1 ELSE 0 END)::int as "inboxEmails",
+        SUM(CASE WHEN read = true THEN 1 ELSE 0 END)::int as "readEmails",
+        MAX("unsubscribeLink") as "unsubscribeLink"
       FROM "EmailMessage"
       ${Prisma.raw(whereClause)}
       GROUP BY "from"
     )
-    SELECT * FROM newsletter_stats
+    SELECT * FROM email_message_stats
     ORDER BY ${Prisma.raw(orderByClause)}
     ${Prisma.raw(limitClause)}
   `;
@@ -206,13 +214,17 @@ async function getNewsletterCounts(
     // Convert BigInt values to regular numbers
     return results.map((result) => ({
       from: result.from,
-      count: Number(result.count),
-      inboxEmails: Number(result.inboxEmails),
-      readEmails: Number(result.readEmails),
-      lastUnsubscribeLink: result.lastUnsubscribeLink,
+      count: result.count,
+      inboxEmails: result.inboxEmails,
+      readEmails: result.readEmails,
+      unsubscribeLink: result.unsubscribeLink,
     }));
   } catch (error) {
-    console.error("Newsletter query error:", error);
+    logger.error("getNewsletterCounts error", {
+      error,
+      errorMessage: error instanceof Error ? error.message : String(error),
+      errorStack: error instanceof Error ? error.stack : undefined,
+    });
     return [];
   }
 }
@@ -230,10 +242,9 @@ function getOrderByClause(orderBy: string): string {
   }
 }
 
-export const GET = withError(async (request) => {
-  const session = await auth();
-  if (!session?.user.email)
-    return NextResponse.json({ error: "Not authenticated" });
+export const GET = withEmailProvider(async (request) => {
+  const { emailProvider } = request;
+  const { emailAccountId } = request.auth;
 
   const { searchParams } = new URL(request.url);
   const params = newsletterStatsQuery.parse({
@@ -247,10 +258,10 @@ export const GET = withError(async (request) => {
       searchParams.get("includeMissingUnsubscribe") === "true",
   });
 
-  const result = await getNewslettersTinybird({
+  const result = await getEmailMessages({
     ...params,
-    ownerEmail: session.user.email,
-    userId: session.user.id,
+    emailAccountId,
+    emailProvider,
   });
 
   return NextResponse.json(result);

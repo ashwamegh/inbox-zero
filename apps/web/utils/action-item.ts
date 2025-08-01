@@ -12,6 +12,7 @@ export const actionInputs: Record<
       name: "label" | "subject" | "content" | "to" | "cc" | "bcc" | "url";
       label: string;
       textArea?: boolean;
+      expandable?: boolean;
     }[];
   }
 > = {
@@ -24,11 +25,13 @@ export const actionInputs: Record<
       },
     ],
   },
+  [ActionType.DIGEST]: { fields: [] },
   [ActionType.DRAFT_EMAIL]: {
     fields: [
       {
         name: "subject",
         label: "Subject",
+        expandable: true,
       },
       {
         name: "content",
@@ -38,14 +41,17 @@ export const actionInputs: Record<
       {
         name: "to",
         label: "To",
+        expandable: true,
       },
       {
         name: "cc",
         label: "CC",
+        expandable: true,
       },
       {
         name: "bcc",
         label: "BCC",
+        expandable: true,
       },
     ],
   },
@@ -59,10 +65,12 @@ export const actionInputs: Record<
       {
         name: "cc",
         label: "CC",
+        expandable: true,
       },
       {
         name: "bcc",
         label: "BCC",
+        expandable: true,
       },
     ],
   },
@@ -84,10 +92,12 @@ export const actionInputs: Record<
       {
         name: "cc",
         label: "CC",
+        expandable: true,
       },
       {
         name: "bcc",
         label: "BCC",
+        expandable: true,
       },
     ],
   },
@@ -105,10 +115,12 @@ export const actionInputs: Record<
       {
         name: "cc",
         label: "CC",
+        expandable: true,
       },
       {
         name: "bcc",
         label: "BCC",
+        expandable: true,
       },
     ],
   },
@@ -150,13 +162,21 @@ export function getActionFields(fields: Action | ExecutedAction | undefined) {
 
 type ActionFieldsSelection = Pick<
   Prisma.ActionCreateInput,
-  "type" | "label" | "subject" | "content" | "to" | "cc" | "bcc" | "url"
+  | "type"
+  | "label"
+  | "subject"
+  | "content"
+  | "to"
+  | "cc"
+  | "bcc"
+  | "url"
+  | "delayInMinutes"
 >;
 
 export function sanitizeActionFields(
   action: Partial<ActionFieldsSelection> & { type: ActionType },
 ): ActionFieldsSelection {
-  const base = {
+  const base: ActionFieldsSelection = {
     type: action.type,
     label: null,
     subject: null,
@@ -165,6 +185,7 @@ export function sanitizeActionFields(
     cc: null,
     bcc: null,
     url: null,
+    delayInMinutes: action.delayInMinutes || null,
   };
 
   switch (action.type) {
@@ -172,6 +193,7 @@ export function sanitizeActionFields(
     case ActionType.MARK_SPAM:
     case ActionType.MARK_READ:
     case ActionType.TRACK_THREAD:
+    case ActionType.DIGEST:
       return base;
     case ActionType.LABEL: {
       return {

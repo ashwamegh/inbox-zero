@@ -1,37 +1,49 @@
-import type { gmail_v1 } from "@googleapis/gmail";
-import { auth } from "@/app/api/auth/[...nextauth]/auth";
+import type { EmailProvider, EmailFilter } from "@/utils/email/provider";
 import { extractEmailAddress } from "@/utils/email";
-import { getGmailClient } from "@/utils/gmail/client";
-import { getFiltersList } from "@/utils/gmail/filter";
 import prisma from "@/utils/prisma";
 import { NewsletterStatus } from "@prisma/client";
 import { GmailLabel } from "@/utils/gmail/label";
-import { SafeError } from "@/utils/error";
+import { createScopedLogger } from "@/utils/logger";
 
-export async function getAutoArchiveFilters() {
-  const session = await auth();
-  if (!session?.user.email) throw new SafeError("Not logged in");
-  const gmail = getGmailClient(session);
+const logger = createScopedLogger("newsletter-helpers");
 
-  const filters = await getFiltersList({ gmail });
-  const autoArchiveFilters = filters.data.filter?.filter(isAutoArchiveFilter);
+export async function getAutoArchiveFilters(emailProvider: EmailProvider) {
+  try {
+    const filters = await emailProvider.getFiltersList();
 
-  return autoArchiveFilters || [];
+    const autoArchiveFilters = filters.filter((filter) =>
+      isAutoArchiveFilter(filter, emailProvider),
+    );
+
+    return autoArchiveFilters;
+  } catch (error) {
+    logger.error("Error getting auto-archive filters", { error });
+    // Return empty array instead of throwing, so the newsletter stats still work
+    return [];
+  }
 }
 
 export function findAutoArchiveFilter(
-  autoArchiveFilters: gmail_v1.Schema$Filter[],
+  autoArchiveFilters: EmailFilter[],
   fromEmail: string,
+  emailProvider: EmailProvider,
 ) {
   return autoArchiveFilters.find((filter) => {
     const from = extractEmailAddress(fromEmail);
-    return filter.criteria?.from?.includes(from) && isAutoArchiveFilter(filter);
+    return (
+      filter.criteria?.from?.toLowerCase().includes(from.toLowerCase()) &&
+      isAutoArchiveFilter(filter, emailProvider)
+    );
   });
 }
 
-export async function findNewsletterStatus(userId: string) {
+export async function findNewsletterStatus({
+  emailAccountId,
+}: {
+  emailAccountId: string;
+}) {
   const userNewsletters = await prisma.newsletter.findMany({
-    where: { userId },
+    where: { emailAccountId },
     select: { email: true, status: true },
   });
   return userNewsletters;
@@ -39,7 +51,7 @@ export async function findNewsletterStatus(userId: string) {
 
 export function filterNewsletters<
   T extends {
-    autoArchived?: gmail_v1.Schema$Filter;
+    autoArchived?: EmailFilter;
     status?: NewsletterStatus | null;
   },
 >(
@@ -66,9 +78,26 @@ export function filterNewsletters<
   });
 }
 
-function isAutoArchiveFilter(filter: gmail_v1.Schema$Filter) {
-  return (
+function isAutoArchiveFilter(filter: EmailFilter, provider: EmailProvider) {
+  switch (provider.name) {
+    case "google":
+      return isGmailAutoArchiveFilter(filter);
+    case "microsoft-entra-id":
+      return isOutlookAutoArchiveFilter(filter);
+    default:
+      return false;
+  }
+}
+
+function isGmailAutoArchiveFilter(filter: EmailFilter): boolean {
+  // For Gmail: check if it removes INBOX label or adds TRASH label
+  return Boolean(
     filter.action?.removeLabelIds?.includes(GmailLabel.INBOX) ||
-    filter.action?.addLabelIds?.includes(GmailLabel.TRASH)
+      filter.action?.addLabelIds?.includes(GmailLabel.TRASH),
   );
+}
+
+function isOutlookAutoArchiveFilter(filter: EmailFilter): boolean {
+  // For Outlook: check if it moves to archive folder (removeLabelIds contains "INBOX")
+  return Boolean(filter.action?.removeLabelIds?.includes("INBOX"));
 }

@@ -28,11 +28,29 @@ export function usePricingVariant() {
   );
 }
 
-export type SkipUpgradeVariant = "control" | "skip-button";
+export type PricingFrequencyDefault = "control" | "monthly";
 
-export function useSkipUpgrade() {
+export function usePricingFrequencyDefault() {
   return (
-    (useFeatureFlagVariantKey("skip-upgrade") as SkipUpgradeVariant) ||
+    (useFeatureFlagVariantKey(
+      "pricing-frequency-default",
+    ) as PricingFrequencyDefault) || "control"
+  );
+}
+export function useDigestEnabled() {
+  return useFeatureFlagEnabled("digest-emails");
+  // return true;
+}
+
+export function useDelayedActionsEnabled() {
+  return useFeatureFlagEnabled("delayed-actions");
+}
+
+export type TestimonialsVariant = "control" | "senja-widget";
+
+export function useTestimonialsVariant() {
+  return (
+    (useFeatureFlagVariantKey("testimonials") as TestimonialsVariant) ||
     "control"
   );
 }

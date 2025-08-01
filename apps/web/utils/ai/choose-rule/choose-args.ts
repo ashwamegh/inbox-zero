@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { gmail_v1 } from "@googleapis/gmail";
-import type { UserEmailWithAI } from "@/utils/llms/types";
+import type { EmailAccountWithAI } from "@/utils/llms/types";
 import { ActionType, type Action } from "@prisma/client";
 import {
   type RuleWithActions,
@@ -10,6 +10,13 @@ import {
 import { fetchMessagesAndGenerateDraft } from "@/utils/reply-tracker/generate-draft";
 import { getEmailForLLM } from "@/utils/get-email-from-message";
 import { aiGenerateArgs } from "@/utils/ai/choose-rule/ai-choose-args";
+import type { OutlookClient } from "@/utils/outlook/client";
+import { createScopedLogger } from "@/utils/logger";
+import type { EmailProvider } from "@/utils/email/provider";
+
+const logger = createScopedLogger("choose-args");
+
+type EmailClient = gmail_v1.Gmail | OutlookClient;
 
 type ActionArgResponse = {
   [key: `${string}-${string}`]: {
@@ -21,27 +28,35 @@ type ActionArgResponse = {
 
 export async function getActionItemsWithAiArgs({
   message,
-  user,
+  emailAccount,
   selectedRule,
-  gmail,
+  client,
 }: {
   message: ParsedMessage;
-  user: UserEmailWithAI;
+  emailAccount: EmailAccountWithAI;
   selectedRule: RuleWithActions;
-  gmail: gmail_v1.Gmail;
+  client: EmailProvider;
 }): Promise<Action[]> {
-  const email = getEmailForLLM(message);
-
-  const draftEmailActions = selectedRule.actions.filter(
-    (action) => action.type === ActionType.DRAFT_EMAIL,
-  );
-
   // Draft content is handled via its own AI call
   // We provide a lot more context to the AI to draft the content
+  const draftEmailActions = selectedRule.actions.filter(
+    (action) => action.type === ActionType.DRAFT_EMAIL && !action.content,
+  );
+
   let draft: string | null = null;
 
   if (draftEmailActions.length) {
-    draft = await fetchMessagesAndGenerateDraft(user, message.threadId, gmail);
+    try {
+      draft = await fetchMessagesAndGenerateDraft(
+        emailAccount,
+        message.threadId,
+        client,
+      );
+    } catch (error) {
+      logger.error("Failed to generate draft", { error });
+      // Continue without draft if generation fails
+      draft = null;
+    }
   }
 
   const parameters = extractActionsNeedingAiGeneration(selectedRule.actions);
@@ -49,8 +64,8 @@ export async function getActionItemsWithAiArgs({
   if (parameters.length === 0 && !draft) return selectedRule.actions;
 
   const result = await aiGenerateArgs({
-    email,
-    user,
+    email: getEmailForLLM(message),
+    emailAccount,
     selectedRule,
     parameters,
   });

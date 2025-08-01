@@ -7,7 +7,7 @@ import { logger } from "@/app/api/google/webhook/logger";
 export const maxDuration = 120;
 
 // Google PubSub calls this endpoint each time a user recieves an email. We subscribe for updates via `api/google/watch`
-export const POST = withError(async (request: Request) => {
+export const POST = withError(async (request) => {
   const searchParams = new URL(request.url).searchParams;
   const token = searchParams.get("token");
   if (
@@ -31,7 +31,24 @@ export const POST = withError(async (request: Request) => {
     historyId: decodedData.historyId,
   });
 
-  return await processHistoryForUser(decodedData);
+  try {
+    return await processHistoryForUser(decodedData);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("invalid_grant")) {
+      logger.warn("Invalid grant error", {
+        error: error.message,
+        emailAddress: decodedData.emailAddress,
+        historyId: decodedData.historyId,
+      });
+      // Returning 200 to avoid retry
+      return NextResponse.json(
+        { message: "Invalid grant error" },
+        { status: 200 },
+      );
+    } else {
+      throw error;
+    }
+  }
 });
 
 function decodeHistoryId(body: { message?: { data?: string } }) {

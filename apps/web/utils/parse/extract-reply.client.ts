@@ -11,6 +11,7 @@ export function extractEmailReply(html: string): {
     const doc = parser.parseFromString(html, "text/html");
 
     if (doc.body.innerHTML === "null") {
+      // biome-ignore lint/suspicious/noConsole: helpful for debugging
       console.warn("Failed to parse HTML - received null content");
       return { draftHtml: html, originalHtml: "" };
     }
@@ -28,15 +29,14 @@ export function extractEmailReply(html: string): {
         html.indexOf("<br>") < html.indexOf("gmail_quote")
       ) {
         // Get the content before the <br> that precedes the gmail_quote
-        const replyPart = html.substring(0, html.indexOf("<br>"));
+        const _replyPart = html.substring(0, html.indexOf("<br>"));
 
-        // Parse just the reply part to extract the first div[dir="ltr"]
-        const replyDoc = parser.parseFromString(replyPart, "text/html");
-        const replyDiv = replyDoc.querySelector('div[dir="ltr"]');
+        // Use the original document and just return the outerHTML of the first div[dir="ltr"]
+        const topLevelReplyDiv = doc.querySelector('div[dir="ltr"]');
 
-        if (replyDiv) {
+        if (topLevelReplyDiv) {
           return {
-            draftHtml: replyDiv.outerHTML,
+            draftHtml: topLevelReplyDiv.outerHTML,
             originalHtml: quoteContainer.outerHTML,
           };
         }
@@ -60,6 +60,7 @@ export function extractEmailReply(html: string): {
 
     return { draftHtml: html, originalHtml: "" };
   } catch (error) {
+    // biome-ignore lint/suspicious/noConsole: helpful for debugging
     console.error("Error parsing email HTML:", error);
     return { draftHtml: html, originalHtml: "" };
   }

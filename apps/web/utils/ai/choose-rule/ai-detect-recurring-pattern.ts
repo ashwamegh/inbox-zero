@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { UserEmailWithAI } from "@/utils/llms/types";
+import type { EmailAccountWithAI } from "@/utils/llms/types";
 import { chatCompletionObject } from "@/utils/llms";
 import type { EmailForLLM } from "@/utils/types";
 import { stringifyEmail } from "@/utils/stringify-email";
@@ -10,18 +10,18 @@ const logger = createScopedLogger("detect-recurring-pattern");
 // const braintrust = new Braintrust("recurring-pattern-detection");
 
 const schema = z.object({
-  matchedRule: z.string().nullable(),
+  matchedRule: z.string().nullish(),
   explanation: z.string(),
 });
 export type DetectPatternResult = z.infer<typeof schema>;
 
 export async function aiDetectRecurringPattern({
   emails,
-  user,
+  emailAccount,
   rules,
 }: {
   emails: EmailForLLM[];
-  user: UserEmailWithAI;
+  emailAccount: EmailAccountWithAI;
   rules: {
     name: string;
     instructions: string;
@@ -68,9 +68,9 @@ ${rules
 </user_rules>
 
 ${
-  user.about
-    ? `<user_info>\n<about>${user.about}</about>\n<email>${user.email}</email>\n</user_info>`
-    : `<user_info>\n<email>${user.email}</email>\n</user_info>`
+  emailAccount.about
+    ? `<user_info>\n<about>${emailAccount.about}</about>\n<email>${emailAccount.email}</email>\n</user_info>`
+    : `<user_info>\n<email>${emailAccount.email}</email>\n</user_info>`
 }
 
 <outputFormat>
@@ -99,11 +99,11 @@ ${stringifyEmail(email, 500)}
 
   try {
     const aiResponse = await chatCompletionObject({
-      userAi: user,
+      userAi: emailAccount.user,
       system,
       prompt,
       schema,
-      userEmail: user.email || "",
+      userEmail: emailAccount.email,
       usageLabel: "Detect recurring pattern",
     });
 

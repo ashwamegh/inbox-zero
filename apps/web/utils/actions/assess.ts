@@ -1,77 +1,71 @@
 "use server";
 
-import { auth } from "@/app/api/auth/[...nextauth]/auth";
-import { getGmailClient } from "@/utils/gmail/client";
 import prisma from "@/utils/prisma";
-import { withActionInstrumentation } from "@/utils/actions/middleware";
 import { assessUser } from "@/utils/assess";
 import { aiAnalyzeWritingStyle } from "@/utils/ai/knowledge/writing-style";
-import { getAiUser } from "@/utils/user/get";
-import { createScopedLogger } from "@/utils/logger";
 import { formatBulletList } from "@/utils/string";
-import { getSentMessages } from "@/utils/gmail/message";
 import { getEmailForLLM } from "@/utils/get-email-from-message";
-
-const logger = createScopedLogger("assess-user");
+import { actionClient } from "@/utils/actions/safe-action";
+import { createEmailProvider } from "@/utils/email/provider";
+import { SafeError } from "@/utils/error";
 
 // to help with onboarding and provide the best flow to new users
-export const assessUserAction = withActionInstrumentation(
-  "assessUser",
-  async () => {
-    const session = await auth();
-    if (!session?.user.email) return { error: "Not authenticated" };
+export const assessAction = actionClient
+  .metadata({ name: "assessUser" })
+  .action(async ({ ctx: { emailAccountId, provider } }) => {
+    const emailProvider = await createEmailProvider({
+      emailAccountId,
+      provider,
+    });
 
-    const gmail = getGmailClient(session);
-
-    const assessedUser = await prisma.user.findUnique({
-      where: { email: session.user.email },
+    const emailAccount = await prisma.emailAccount.findUnique({
+      where: { id: emailAccountId },
       select: { behaviorProfile: true },
     });
 
-    if (assessedUser?.behaviorProfile) return { success: true, skipped: true };
+    if (emailAccount?.behaviorProfile) return { success: true, skipped: true };
 
-    const result = await assessUser({ gmail });
-    await saveBehaviorProfile(session.user.email, result);
+    const result = await assessUser({ client: emailProvider });
+    await prisma.emailAccount.update({
+      where: { id: emailAccountId },
+      data: { behaviorProfile: result },
+    });
 
     return { success: true };
-  },
-);
-
-async function saveBehaviorProfile(
-  email: string,
-  assessment: Awaited<ReturnType<typeof assessUser>>,
-) {
-  await prisma.user.update({
-    where: { email },
-    data: { behaviorProfile: assessment },
   });
-}
 
-export const analyzeWritingStyleAction = withActionInstrumentation(
-  "analyzeWritingStyle",
-  async () => {
-    const session = await auth();
-    if (!session?.user.email) return { error: "Not authenticated" };
-
-    const user = await getAiUser({ id: session.user.id });
-    if (!user) return { error: "User not found" };
-
+export const analyzeWritingStyleAction = actionClient
+  .metadata({ name: "analyzeWritingStyle" })
+  .action(async ({ ctx: { emailAccountId, provider } }) => {
     const emailAccount = await prisma.emailAccount.findUnique({
-      where: { email: session.user.email },
-      select: { id: true, writingStyle: true },
+      where: { id: emailAccountId },
+      select: {
+        writingStyle: true,
+        id: true,
+        userId: true,
+        email: true,
+        about: true,
+        user: { select: { aiProvider: true, aiModel: true, aiApiKey: true } },
+      },
     });
+
+    if (!emailAccount) throw new SafeError("Email account not found");
+
     if (emailAccount?.writingStyle) return { success: true, skipped: true };
 
-    // fetch last 20 sent emails
-    const gmail = getGmailClient(session);
-    const sentMessages = await getSentMessages(gmail, 20);
+    // fetch last 20 sent emails using the provider's getSentMessages method
+    const emailProvider = await createEmailProvider({
+      emailAccountId,
+      provider,
+    });
+    const sentMessages = await emailProvider.getSentMessages(20);
 
     // analyze writing style
     const style = await aiAnalyzeWritingStyle({
       emails: sentMessages.map((email) =>
         getEmailForLLM(email, { extractReply: true }),
       ),
-      user,
+      emailAccount,
     });
 
     if (!style) return;
@@ -91,32 +85,10 @@ export const analyzeWritingStyleAction = withActionInstrumentation(
       .filter(Boolean)
       .join("\n");
 
-    if (emailAccount) {
-      await prisma.emailAccount.update({
-        where: { id: emailAccount.id },
-        data: { writingStyle },
-      });
-    } else {
-      const account = await prisma.account.findFirst({
-        where: { userId: session.user.id },
-        select: { id: true },
-      });
-
-      if (!account) {
-        logger.error("Account not found", { userId: session.user.id });
-        return { error: "Account not found" };
-      }
-
-      await prisma.emailAccount.create({
-        data: {
-          email: session.user.email,
-          accountId: account.id,
-          writingStyle,
-          userId: session.user.id,
-        },
-      });
-    }
+    await prisma.emailAccount.update({
+      where: { id: emailAccountId },
+      data: { writingStyle },
+    });
 
     return { success: true };
-  },
-);
+  });

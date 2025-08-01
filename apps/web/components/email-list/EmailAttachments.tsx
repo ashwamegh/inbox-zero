@@ -15,7 +15,7 @@ export function EmailAttachments({ message }: { message: ThreadMessage }) {
           filename: attachment.filename,
         });
 
-        const url = `/api/google/messages/attachment?${searchParams.toString()}`;
+        const url = `/api/messages/attachment?${searchParams.toString()}`;
 
         return (
           <CardBasic key={attachment.filename} className="p-4">
@@ -26,10 +26,8 @@ export function EmailAttachments({ message }: { message: ThreadMessage }) {
               </div>
               <Button variant="outline" size="sm" asChild>
                 <Link href={url} target="_blank">
-                  <>
-                    <DownloadIcon className="mr-2 h-4 w-4" />
-                    Download
-                  </>
+                  <DownloadIcon className="mr-2 h-4 w-4" />
+                  Download
                 </Link>
               </Button>
             </div>

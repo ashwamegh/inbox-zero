@@ -1,7 +1,8 @@
-import type { NextRequest } from "next/server";
-import { auth } from "@/app/api/auth/[...nextauth]/auth";
 import { createScopedLogger } from "@/utils/logger";
 import { RedisSubscriber } from "@/utils/redis/subscriber";
+import { withAuth } from "@/utils/middleware";
+import { NextResponse } from "next/server";
+import { getEmailAccount } from "@/utils/redis/account-validation";
 
 export const maxDuration = 300;
 
@@ -10,12 +11,31 @@ const logger = createScopedLogger("email-stream");
 // 5 minutes in milliseconds
 const INACTIVITY_TIMEOUT = 5 * 60 * 1000;
 
-export async function GET(request: NextRequest) {
-  const session = await auth();
+export const GET = withAuth(async (request) => {
+  const { userId } = request.auth;
 
-  if (!session?.user) return new Response("Unauthorized", { status: 401 });
+  const url = new URL(request.url);
+  const emailAccountId = url.searchParams.get("emailAccountId");
 
-  const pattern = `thread:${session.user.id}:*`;
+  if (!emailAccountId) {
+    logger.warn("Bad Request: Email Account ID missing from query parameters.");
+    return NextResponse.json(
+      { error: "Email account ID is required" },
+      { status: 400 },
+    );
+  }
+
+  const email = await getEmailAccount({ userId, emailAccountId });
+
+  if (!email)
+    return NextResponse.json({ error: "Invalid account ID" }, { status: 403 });
+
+  logger.info("Processing GET request for email stream", {
+    userId,
+    emailAccountId,
+  });
+
+  const pattern = `thread:${emailAccountId}:*`;
   const redisSubscriber = RedisSubscriber.getInstance();
 
   redisSubscriber.psubscribe(pattern, (err) => {
@@ -31,7 +51,7 @@ export async function GET(request: NextRequest) {
     "X-Accel-Buffering": "no", // For anyone using Nginx
   });
 
-  logger.info("Creating SSE stream", { userId: session.user.id });
+  logger.info("Creating SSE stream", { emailAccountId });
 
   const encoder = new TextEncoder();
 
@@ -44,9 +64,7 @@ export async function GET(request: NextRequest) {
       const resetInactivityTimer = () => {
         if (inactivityTimer) clearTimeout(inactivityTimer);
         inactivityTimer = setTimeout(() => {
-          logger.info("Stream closed due to inactivity", {
-            userId: session.user.id,
-          });
+          logger.info("Stream closed due to inactivity", { emailAccountId });
           if (!isControllerClosed) {
             isControllerClosed = true;
             controller.close();
@@ -76,9 +94,7 @@ export async function GET(request: NextRequest) {
       });
 
       request.signal.addEventListener("abort", () => {
-        logger.info("Cleaning up Redis subscription", {
-          userId: session.user.id,
-        });
+        logger.info("Cleaning up Redis subscription", { emailAccountId });
         clearTimeout(inactivityTimer);
         if (!isControllerClosed) {
           isControllerClosed = true;
@@ -90,4 +106,4 @@ export async function GET(request: NextRequest) {
   });
 
   return new Response(redisStream, { headers });
-}
+});

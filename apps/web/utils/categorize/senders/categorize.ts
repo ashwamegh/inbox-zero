@@ -8,20 +8,24 @@ import { aiCategorizeSender } from "@/utils/ai/categorize-sender/ai-categorize-s
 import { getThreadsFromSenderWithSubject } from "@/utils/gmail/thread";
 import type { Category } from "@prisma/client";
 import { getUserCategories } from "@/utils/category.server";
-import type { UserEmailWithAI } from "@/utils/llms/types";
+import type { EmailAccountWithAI } from "@/utils/llms/types";
 import { createScopedLogger } from "@/utils/logger";
 import { extractEmailAddress } from "@/utils/email";
+import { SafeError } from "@/utils/error";
+import type { EmailProvider } from "@/utils/email/provider";
 
 const logger = createScopedLogger("categorize/senders");
 
 export async function categorizeSender(
   senderAddress: string,
-  user: UserEmailWithAI,
+  emailAccount: EmailAccountWithAI,
   gmail: gmail_v1.Gmail,
   accessToken: string,
   userCategories?: Pick<Category, "id" | "name" | "description">[],
 ) {
-  const categories = userCategories || (await getUserCategories(user.id));
+  const categories =
+    userCategories ||
+    (await getUserCategories({ emailAccountId: emailAccount.id }));
   if (categories.length === 0) return { categoryId: undefined };
 
   const previousEmails = await getThreadsFromSenderWithSubject(
@@ -32,7 +36,7 @@ export async function categorizeSender(
   );
 
   const aiResult = await aiCategorizeSender({
-    user,
+    emailAccount,
     sender: senderAddress,
     previousEmails,
     categories,
@@ -43,14 +47,57 @@ export async function categorizeSender(
       sender: senderAddress,
       categories,
       categoryName: aiResult.category,
-      userId: user.id,
+      emailAccountId: emailAccount.id,
     });
 
     return { categoryId: newsletter.categoryId };
   }
 
   logger.error("No AI result for sender", {
-    userEmail: user.email,
+    userEmail: emailAccount.email,
+    senderAddress,
+  });
+
+  return { categoryId: undefined };
+}
+
+// New function that works with EmailProvider
+export async function categorizeSenderWithProvider(
+  senderAddress: string,
+  emailAccount: EmailAccountWithAI,
+  provider: EmailProvider,
+  userCategories?: Pick<Category, "id" | "name" | "description">[],
+) {
+  const categories =
+    userCategories ||
+    (await getUserCategories({ emailAccountId: emailAccount.id }));
+  if (categories.length === 0) return { categoryId: undefined };
+
+  const previousEmails = await provider.getThreadsFromSenderWithSubject(
+    senderAddress,
+    3,
+  );
+
+  const aiResult = await aiCategorizeSender({
+    emailAccount,
+    sender: senderAddress,
+    previousEmails,
+    categories,
+  });
+
+  if (aiResult) {
+    const { newsletter } = await updateSenderCategory({
+      sender: senderAddress,
+      categories,
+      categoryName: aiResult.category,
+      emailAccountId: emailAccount.id,
+    });
+
+    return { categoryId: newsletter.categoryId };
+  }
+
+  logger.error("No AI result for sender", {
+    userEmail: emailAccount.email,
     senderAddress,
   });
 
@@ -58,12 +105,12 @@ export async function categorizeSender(
 }
 
 export async function updateSenderCategory({
-  userId,
+  emailAccountId,
   sender,
   categories,
   categoryName,
 }: {
-  userId: string;
+  emailAccountId: string;
   sender: string;
   categories: Pick<Category, "id" | "name">[];
   categoryName: string;
@@ -76,7 +123,7 @@ export async function updateSenderCategory({
     newCategory = await prisma.category.create({
       data: {
         name: categoryName,
-        userId,
+        emailAccountId,
         // color: getRandomColor(),
       },
     });
@@ -85,11 +132,13 @@ export async function updateSenderCategory({
 
   // save category
   const newsletter = await prisma.newsletter.upsert({
-    where: { email_userId: { email: sender, userId } },
+    where: {
+      email_emailAccountId: { email: sender, emailAccountId },
+    },
     update: { categoryId: category.id },
     create: {
       email: sender,
-      userId,
+      emailAccountId,
       categoryId: category.id,
     },
   });
@@ -101,21 +150,21 @@ export async function updateSenderCategory({
 }
 
 export async function updateCategoryForSender({
-  userId,
+  emailAccountId,
   sender,
   categoryId,
 }: {
-  userId: string;
+  emailAccountId: string;
   sender: string;
   categoryId: string;
 }) {
   const email = extractEmailAddress(sender);
   await prisma.newsletter.upsert({
-    where: { email_userId: { email, userId } },
+    where: { email_emailAccountId: { email, emailAccountId } },
     update: { categoryId },
     create: {
       email,
-      userId,
+      emailAccountId,
       categoryId,
     },
   });
@@ -137,18 +186,22 @@ function preCategorizeSendersWithStaticRules(
   });
 }
 
-export async function getCategories(userId: string) {
-  const categories = await getUserCategories(userId);
-  if (categories.length === 0) return { error: "No categories found" };
+export async function getCategories({
+  emailAccountId,
+}: {
+  emailAccountId: string;
+}) {
+  const categories = await getUserCategories({ emailAccountId });
+  if (categories.length === 0) throw new SafeError("No categories found");
   return { categories };
 }
 
 export async function categorizeWithAi({
-  user,
+  emailAccount,
   sendersWithEmails,
   categories,
 }: {
-  user: UserEmailWithAI;
+  emailAccount: EmailAccountWithAI;
   sendersWithEmails: Map<string, { subject: string; snippet: string }[]>;
   categories: Pick<Category, "name" | "description">[];
 }) {
@@ -161,12 +214,12 @@ export async function categorizeWithAi({
     .map((sender) => sender.sender);
 
   logger.info("Found senders to categorize with AI", {
-    userEmail: user.email,
+    userEmail: emailAccount.email,
     count: sendersToCategorizeWithAi.length,
   });
 
   const aiResults = await aiCategorizeSenders({
-    user,
+    emailAccount,
     senders: sendersToCategorizeWithAi.map((sender) => ({
       emailAddress: sender,
       emails: sendersWithEmails.get(sender) || [],

@@ -109,7 +109,7 @@ export async function archiveThread({
   if (archiveResult.status === "rejected") {
     const error = archiveResult.reason as Error;
     if (error.message?.includes("Requested entity was not found")) {
-      logger.error("Thread not found", { threadId });
+      logger.warn("Thread not found", { threadId, userEmail: ownerEmail });
       return { status: 404, message: "Thread not found" };
     }
     logger.error("Failed to archive thread", { threadId, error });
@@ -184,7 +184,7 @@ export async function markImportantMessage(options: {
   });
 }
 
-async function createLabel({
+export async function createLabel({
   gmail,
   name,
   messageListVisibility,
@@ -335,7 +335,7 @@ export async function getOrCreateInboxZeroLabel({
   if (!parentLabel) {
     try {
       await createLabel({ gmail, name: PARENT_LABEL });
-    } catch (error) {
+    } catch {
       logger.warn("Parent label already exists", { name: PARENT_LABEL });
     }
   }

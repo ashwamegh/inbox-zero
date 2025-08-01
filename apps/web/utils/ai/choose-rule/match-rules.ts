@@ -1,4 +1,3 @@
-import type { gmail_v1 } from "@googleapis/gmail";
 import { getConditionTypes, isAIRule } from "@/utils/condition";
 import {
   findMatchingGroup,
@@ -12,15 +11,13 @@ import type {
 import {
   CategoryFilterType,
   LogicalOperator,
-  type User,
   SystemType,
 } from "@prisma/client";
 import { ConditionType } from "@/utils/config";
 import prisma from "@/utils/prisma";
 import { aiChooseRule } from "@/utils/ai/choose-rule/ai-choose-rule";
 import { getEmailForLLM } from "@/utils/get-email-from-message";
-import { isReplyInThread } from "@/utils/thread";
-import type { UserAIFields } from "@/utils/llms/types";
+import type { EmailAccountWithAI } from "@/utils/llms/types";
 import { createScopedLogger } from "@/utils/logger";
 import type {
   MatchReason,
@@ -29,6 +26,7 @@ import type {
 import { extractEmailAddress } from "@/utils/email";
 import { hasIcsAttachment } from "@/utils/parse/calender-event";
 import { checkSenderReplyHistory } from "@/utils/reply-tracker/check-sender-reply-history";
+import type { EmailProvider } from "@/utils/email/provider";
 
 const logger = createScopedLogger("match-rules");
 
@@ -42,18 +40,17 @@ async function findPotentialMatchingRules({
   rules,
   message,
   isThread,
-  gmail,
+  client,
 }: {
   rules: RuleWithActionsAndCategories[];
   message: ParsedMessage;
   isThread: boolean;
-  gmail: gmail_v1.Gmail;
+  client: EmailProvider;
 }): Promise<MatchingRuleResult> {
   const potentialMatches: (RuleWithActionsAndCategories & {
     instructions: string;
   })[] = [];
 
-  // Check for calendar preset match
   const isCalendarEvent = hasIcsAttachment(message);
   if (isCalendarEvent) {
     const calendarRule = rules.find(
@@ -73,23 +70,21 @@ async function findPotentialMatchingRules({
     }
   }
 
-  // groups singleton
-  let groups: Awaited<ReturnType<typeof getGroupsWithRules>>;
   // only load once and only when needed
-  async function getGroups(userId: string) {
-    if (!groups) groups = await getGroupsWithRules(userId);
+  let groups: Awaited<ReturnType<typeof getGroupsWithRules>>;
+  async function getGroups({ emailAccountId }: { emailAccountId: string }) {
+    if (!groups) groups = await getGroupsWithRules({ emailAccountId });
     return groups;
   }
 
-  // sender singleton
   let sender: { categoryId: string | null } | null | undefined;
-  async function getSender(userId: string) {
+  async function getSender({ emailAccountId }: { emailAccountId: string }) {
     if (typeof sender === "undefined") {
       sender = await prisma.newsletter.findUnique({
         where: {
-          email_userId: {
+          email_emailAccountId: {
             email: extractEmailAddress(message.headers.from),
-            userId,
+            emailAccountId,
           },
         },
         select: { categoryId: true },
@@ -102,7 +97,6 @@ async function findPotentialMatchingRules({
   for (const rule of rules) {
     const { runOnThreads, conditionalOperator: operator } = rule;
 
-    // skip if not thread and not run on threads
     if (isThread && !runOnThreads) continue;
 
     const conditionTypes = getConditionTypes(rule);
@@ -111,11 +105,15 @@ async function findPotentialMatchingRules({
     // group - ignores conditional operator
     // if a match is found, return it
     if (rule.groupId) {
-      const { matchingItem, group } = await matchesGroupRule(
+      const { matchingItem, group, ruleExcluded } = await matchesGroupRule(
         rule,
-        await getGroups(rule.userId),
+        await getGroups({ emailAccountId: rule.emailAccountId }),
         message,
       );
+
+      // If this rule is excluded by an exclusion pattern, skip it entirely
+      if (ruleExcluded) continue;
+
       if (matchingItem) {
         matchReasons.push({
           type: ConditionType.GROUP,
@@ -132,7 +130,6 @@ async function findPotentialMatchingRules({
       Object.keys(conditionTypes) as ConditionType[],
     );
 
-    // static
     if (conditionTypes.STATIC) {
       const match = matchesStaticRule(rule, message);
       if (match) {
@@ -146,11 +143,10 @@ async function findPotentialMatchingRules({
       }
     }
 
-    // category
     if (conditionTypes.CATEGORY) {
       const matchedCategory = await matchesCategoryRule(
         rule,
-        await getSender(rule.userId),
+        await getSender({ emailAccountId: rule.emailAccountId }),
       );
       if (matchedCategory) {
         unmatchedConditions.delete(ConditionType.CATEGORY);
@@ -168,18 +164,16 @@ async function findPotentialMatchingRules({
       }
     }
 
-    // ai
-    // we'll need to run the LLM later to determine if it matches
     if (conditionTypes.AI && isAIRule(rule)) {
+      // we'll need to run the LLM later to determine if it matches
       potentialMatches.push(rule);
     }
   }
 
-  // Apply TO_REPLY preset filter before returning potential matches
   const filteredPotentialMatches = await filterToReplyPreset(
     potentialMatches,
     message,
-    gmail,
+    client,
   );
 
   return { potentialMatches: filteredPotentialMatches };
@@ -194,7 +188,7 @@ function getMatchReason(matchReasons?: MatchReason[]): string | undefined {
         case ConditionType.STATIC:
           return "Matched static conditions";
         case ConditionType.GROUP:
-          return `Matched group item: "${reason.groupItem.type}: ${reason.groupItem.value}"`;
+          return `Matched learned pattern: "${reason.groupItem.type}: ${reason.groupItem.value}"`;
         case ConditionType.CATEGORY:
           return `Matched category: "${reason.category.name}"`;
         case ConditionType.PRESET:
@@ -204,13 +198,23 @@ function getMatchReason(matchReasons?: MatchReason[]): string | undefined {
     .join(", ");
 }
 
-export async function findMatchingRule(
-  rules: RuleWithActionsAndCategories[],
-  message: ParsedMessage,
-  user: Pick<User, "id" | "email" | "about"> & UserAIFields,
-  gmail: gmail_v1.Gmail,
-) {
-  const result = await findMatchingRuleWithReasons(rules, message, user, gmail);
+export async function findMatchingRule({
+  rules,
+  message,
+  emailAccount,
+  client,
+}: {
+  rules: RuleWithActionsAndCategories[];
+  message: ParsedMessage;
+  emailAccount: EmailAccountWithAI;
+  client: EmailProvider;
+}) {
+  const result = await findMatchingRuleWithReasons(
+    rules,
+    message,
+    emailAccount,
+    client,
+  );
   return {
     ...result,
     reason: result.reason || getMatchReason(result.matchReasons || []),
@@ -220,20 +224,21 @@ export async function findMatchingRule(
 async function findMatchingRuleWithReasons(
   rules: RuleWithActionsAndCategories[],
   message: ParsedMessage,
-  user: Pick<User, "id" | "email" | "about"> & UserAIFields,
-  gmail: gmail_v1.Gmail,
+  emailAccount: EmailAccountWithAI,
+  client: EmailProvider,
 ): Promise<{
   rule?: RuleWithActionsAndCategories;
   matchReasons?: MatchReason[];
   reason?: string;
 }> {
-  const isThread = isReplyInThread(message.id, message.threadId);
+  const isThread = client.isReplyInThread(message);
+
   const { match, matchReasons, potentialMatches } =
     await findPotentialMatchingRules({
       rules,
       message,
       isThread,
-      gmail,
+      client,
     });
 
   if (match) return { rule: match, matchReasons };
@@ -242,7 +247,7 @@ async function findMatchingRuleWithReasons(
     const result = await aiChooseRule({
       email: getEmailForLLM(message),
       rules: potentialMatches,
-      user,
+      emailAccount,
     });
 
     return result;
@@ -259,26 +264,48 @@ export function matchesStaticRule(
 
   if (!from && !to && !subject && !body) return false;
 
-  const safeRegexTest = (pattern: string, text: string) => {
+  const safeRegexTest = (
+    pattern: string,
+    text: string,
+    allowPipeAsOr = false,
+  ) => {
     try {
-      const regexPattern = pattern.startsWith("*")
-        ? // Convert *@gmail.com to .*@gmail.com
-          `.*${pattern.slice(1)}`
-        : pattern;
+      // Split by pipe to handle OR conditions only for email fields (from/to)
+      const patterns = allowPipeAsOr ? pattern.split("|") : [pattern];
 
-      return new RegExp(regexPattern).test(text);
+      // Test each pattern individually
+      for (const individualPattern of patterns) {
+        // Escape regex special characters except for * which we want to support as wildcards
+        const escapedPattern = individualPattern.replace(
+          /[.+?^${}()[\]\\]/g,
+          "\\$&",
+        );
+
+        // Convert all * to .* for wildcard matching
+        const regexPattern = escapedPattern.replace(/\*/g, ".*");
+
+        if (new RegExp(regexPattern).test(text)) {
+          return true;
+        }
+      }
+
+      return false;
     } catch (error) {
       logger.error("Invalid regex pattern", { pattern, error });
       return false;
     }
   };
 
-  const fromMatch = from ? safeRegexTest(from, message.headers.from) : true;
-  const toMatch = to ? safeRegexTest(to, message.headers.to) : true;
-  const subjectMatch = subject
-    ? safeRegexTest(subject, message.headers.subject)
+  const fromMatch = from
+    ? safeRegexTest(from, message.headers.from, true)
     : true;
-  const bodyMatch = body ? safeRegexTest(body, message.textPlain || "") : true;
+  const toMatch = to ? safeRegexTest(to, message.headers.to, true) : true;
+  const subjectMatch = subject
+    ? safeRegexTest(subject, message.headers.subject, false)
+    : true;
+  const bodyMatch = body
+    ? safeRegexTest(body, message.textPlain || "", false)
+    : true;
 
   return fromMatch && toMatch && subjectMatch && bodyMatch;
 }
@@ -289,8 +316,21 @@ async function matchesGroupRule(
   message: ParsedMessage,
 ) {
   const ruleGroup = groups.find((g) => g.rule?.id === rule.id);
-  if (!ruleGroup) return { group: null, matchingItem: null };
-  return findMatchingGroup(message, ruleGroup);
+  if (!ruleGroup)
+    return { group: null, matchingItem: null, ruleExcluded: false };
+
+  const result = findMatchingGroup(message, ruleGroup);
+
+  if (result.excluded) {
+    // Return a special flag to indicate this rule should be completely excluded
+    return { group: null, matchingItem: null, ruleExcluded: true };
+  }
+
+  if (result.matchingItem) {
+    return { ...result, ruleExcluded: false };
+  }
+
+  return { group: null, matchingItem: null, ruleExcluded: false };
 }
 
 async function matchesCategoryRule(
@@ -317,46 +357,57 @@ async function matchesCategoryRule(
   return matchedFilter;
 }
 
-// Helper function to filter out TO_REPLY preset if conditions met
-async function filterToReplyPreset(
+export async function filterToReplyPreset(
   potentialMatches: (RuleWithActionsAndCategories & { instructions: string })[],
   message: ParsedMessage,
-  gmail: gmail_v1.Gmail,
+  client: EmailProvider,
 ): Promise<(RuleWithActionsAndCategories & { instructions: string })[]> {
-  const toReplyRuleIndex = potentialMatches.findIndex(
+  const toReplyRule = potentialMatches.find(
     (r) => r.systemType === SystemType.TO_REPLY,
   );
 
-  if (toReplyRuleIndex === -1) {
-    return potentialMatches; // No TO_REPLY rule found
-  }
+  if (!toReplyRule) return potentialMatches;
 
   const senderEmail = message.headers.from;
-  if (!senderEmail) {
-    return potentialMatches; // Cannot check history without sender email
+  if (!senderEmail) return potentialMatches;
+
+  const extractedSenderEmail = extractEmailAddress(senderEmail);
+
+  const noReplyPrefixes = [
+    "noreply@",
+    "no-reply@",
+    "notifications@",
+    "info@",
+    "newsletter@",
+    "updates@",
+    "account@",
+  ];
+
+  if (
+    noReplyPrefixes.some((prefix) => extractedSenderEmail.startsWith(prefix))
+  ) {
+    return potentialMatches;
   }
 
   try {
     const { hasReplied, receivedCount } = await checkSenderReplyHistory(
-      gmail,
+      client,
       senderEmail,
       TO_REPLY_RECEIVED_THRESHOLD,
     );
 
-    // If user hasn't replied and received count meets/exceeds the threshold, filter out the rule.
     if (!hasReplied && receivedCount >= TO_REPLY_RECEIVED_THRESHOLD) {
       logger.info(
         "Filtering out TO_REPLY rule due to no prior reply and high received count",
         {
-          ruleId: potentialMatches[toReplyRuleIndex].id,
+          ruleId: toReplyRule.id,
           senderEmail,
           receivedCount,
         },
       );
-      return potentialMatches.filter((_, index) => index !== toReplyRuleIndex);
+      return potentialMatches.filter((r) => r.id !== toReplyRule.id);
     }
   } catch (error) {
-    // Log the error but proceed without filtering in case of failure
     logger.error("Error checking reply history for TO_REPLY filter", {
       senderEmail,
       error,

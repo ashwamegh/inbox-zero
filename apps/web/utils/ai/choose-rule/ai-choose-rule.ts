@@ -1,23 +1,23 @@
 import { z } from "zod";
-import type { UserEmailWithAI } from "@/utils/llms/types";
+import type { EmailAccountWithAI } from "@/utils/llms/types";
 import { chatCompletionObject } from "@/utils/llms";
 import { stringifyEmail } from "@/utils/stringify-email";
 import type { EmailForLLM } from "@/utils/types";
 import { createScopedLogger } from "@/utils/logger";
-import { Braintrust } from "@/utils/braintrust";
+// import { Braintrust } from "@/utils/braintrust";
 
 const logger = createScopedLogger("ai-choose-rule");
 
-const braintrust = new Braintrust("choose-rule-2");
+// const braintrust = new Braintrust("choose-rule-2");
 
 type GetAiResponseOptions = {
   email: EmailForLLM;
-  user: UserEmailWithAI;
+  emailAccount: EmailAccountWithAI;
   rules: { name: string; instructions: string }[];
 };
 
 async function getAiResponse(options: GetAiResponseOptions) {
-  const { email, user, rules } = options;
+  const { email, emailAccount, rules } = options;
 
   const emailSection = stringifyEmail(email, 500);
 
@@ -30,6 +30,8 @@ async function getAiResponse(options: GetAiResponseOptions) {
   1. Match the email to a SPECIFIC user-defined rule that addresses the email's exact content or purpose.
   2. If the email doesn't match any specific rule but the user has a catch-all rule (like "emails that don't match other criteria"), use that catch-all rule.
   3. Only set "noMatchFound" to true if no user-defined rule can reasonably apply.
+  4. Be concise in your reasoning - avoid repetitive explanations.
+  5. Provide only the exact rule name from the list below.
   </priority>
 
   <guidelines>
@@ -51,18 +53,18 @@ ${rules
 </user_rules>
 
 ${
-  user.about
+  emailAccount.about
     ? `<user_info>
-<about>${user.about}</about>
-<email>${user.email}</email>
+<about>${emailAccount.about}</about>
+<email>${emailAccount.email}</email>
 </user_info>`
     : `<user_info>
-<email>${user.email}</email>
+<email>${emailAccount.email}</email>
 </user_info>`
 }
 
 <outputFormat>
-Respond with a JSON object with the following fields:
+Respond with a valid JSON object with the following fields:
 "reason" - the reason you chose that rule. Keep it concise.
 "ruleName" - the exact name of the rule you want to apply
 "noMatchFound" - true if no match was found, false otherwise
@@ -77,7 +79,7 @@ ${emailSection}
   logger.trace("Input", { system, prompt });
 
   const aiResponse = await chatCompletionObject({
-    userAi: user,
+    userAi: emailAccount.user,
     messages: [
       {
         role: "system",
@@ -98,44 +100,50 @@ ${emailSection}
     ],
     schema: z.object({
       reason: z.string(),
-      ruleName: z.string(),
-      noMatchFound: z.boolean().optional(),
+      ruleName: z.string().nullish(),
+      noMatchFound: z.boolean().nullish(),
     }),
-    userEmail: user.email || "",
+    userEmail: emailAccount.email,
     usageLabel: "Choose rule",
   });
 
   logger.trace("Response", aiResponse.object);
 
-  braintrust.insertToDataset({
-    id: email.id,
-    input: {
-      email: emailSection,
-      rules: rules.map((rule) => ({
-        name: rule.name,
-        instructions: rule.instructions,
-      })),
-      hasAbout: !!user.about,
-      userAbout: user.about,
-      userEmail: user.email,
-    },
-    expected: aiResponse.object.ruleName,
-  });
+  // braintrust.insertToDataset({
+  //   id: email.id,
+  //   input: {
+  //     email: emailSection,
+  //     rules: rules.map((rule) => ({
+  //       name: rule.name,
+  //       instructions: rule.instructions,
+  //     })),
+  //     hasAbout: !!emailAccount.about,
+  //     userAbout: emailAccount.about,
+  //     userEmail: emailAccount.email,
+  //   },
+  //   expected: aiResponse.object.ruleName,
+  // });
 
   return aiResponse.object;
 }
 
 export async function aiChooseRule<
   T extends { name: string; instructions: string },
->(options: { email: EmailForLLM; rules: T[]; user: UserEmailWithAI }) {
-  const { email, rules, user } = options;
-
+>({
+  email,
+  rules,
+  emailAccount,
+}: {
+  email: EmailForLLM;
+  rules: T[];
+  emailAccount: EmailAccountWithAI;
+}) {
   if (!rules.length) return { reason: "No rules" };
 
   const aiResponse = await getAiResponse({
     email,
     rules,
-    user,
+    emailAccount,
   });
 
   if (aiResponse.noMatchFound)
@@ -143,7 +151,8 @@ export async function aiChooseRule<
 
   const selectedRule = aiResponse.ruleName
     ? rules.find(
-        (rule) => rule.name.toLowerCase() === aiResponse.ruleName.toLowerCase(),
+        (rule) =>
+          rule.name.toLowerCase() === aiResponse.ruleName?.toLowerCase(),
       )
     : undefined;
 

@@ -19,10 +19,11 @@ export function LoginForm() {
   const next = searchParams?.get("next");
   const error = searchParams?.get("error");
 
-  const [loading, setLoading] = useState(false);
+  const [loadingGoogle, setLoadingGoogle] = useState(false);
+  const [loadingMicrosoft, setLoadingMicrosoft] = useState(false);
 
   return (
-    <div className="flex justify-center px-4 sm:px-16">
+    <div className="flex flex-col justify-center gap-2 px-4 sm:px-16">
       <Dialog>
         <DialogTrigger asChild>
           <Button size="2xl">
@@ -55,9 +56,9 @@ export function LoginForm() {
           </SectionDescription>
           <div>
             <Button
-              loading={loading}
+              loading={loadingGoogle}
               onClick={() => {
-                setLoading(true);
+                setLoadingGoogle(true);
                 signIn(
                   "google",
                   {
@@ -74,6 +75,34 @@ export function LoginForm() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <Button
+        size="2xl"
+        loading={loadingMicrosoft}
+        onClick={() => {
+          setLoadingMicrosoft(true);
+          signIn(
+            "microsoft-entra-id",
+            {
+              ...(next && next.length > 0
+                ? { callbackUrl: next }
+                : { callbackUrl: "/welcome" }),
+            },
+            error === "RequiresReconsent" ? { consent: true } : undefined,
+          );
+        }}
+      >
+        <span className="flex items-center justify-center">
+          <Image
+            src="/images/microsoft.svg"
+            alt=""
+            width={24}
+            height={24}
+            unoptimized
+          />
+          <span className="ml-2">Sign in with Microsoft</span>
+        </span>
+      </Button>
     </div>
   );
 }

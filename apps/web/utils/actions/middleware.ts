@@ -10,9 +10,11 @@ import {
   type ServerActionResponse,
 } from "@/utils/error";
 import { logErrorToPosthog } from "@/utils/error.server";
-import { isDuplicateError } from "@/utils/prisma";
+import { isDuplicateError } from "@/utils/prisma-helpers";
 import { createScopedLogger } from "@/utils/logger";
 import { env } from "@/env";
+
+// NOTE: this file is not longer in use but we want to move over functionality to the `actionClient`
 
 const logger = createScopedLogger("action-middleware");
 
@@ -92,6 +94,7 @@ export function withActionInstrumentation<
             if (isAICallError(error)) {
               // Quick fix: log full error in development. TODO: handle properly
               if (env.NODE_ENV === "development") {
+                // biome-ignore lint/suspicious/noConsole: helpful for debugging
                 console.error(error);
               }
 
@@ -131,7 +134,6 @@ export function withActionInstrumentation<
 
       // Quick fix: log full error in development. TODO: handle properly
       if (env.NODE_ENV === "development") {
-        console.error(error);
       }
 
       // error is already captured by Sentry in `withServerActionInstrumentation`

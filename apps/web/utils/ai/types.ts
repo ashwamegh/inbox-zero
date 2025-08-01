@@ -1,4 +1,4 @@
-import type { ParsedMessage, PartialRecord } from "@/utils/types";
+import type { ParsedMessage } from "@/utils/types";
 import type { ExecutedAction } from "@prisma/client";
 
 export type EmailForAction = Pick<
@@ -22,4 +22,5 @@ export type ActionItem = {
   cc?: ExecutedAction["cc"];
   bcc?: ExecutedAction["bcc"];
   url?: ExecutedAction["url"];
+  delayInMinutes?: number | null;
 };

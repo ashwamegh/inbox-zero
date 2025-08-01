@@ -1,5 +1,6 @@
 import { describe, expect, test, vi, beforeEach } from "vitest";
 import { aiAnalyzeWritingStyle } from "@/utils/ai/knowledge/writing-style";
+import { getEmailAccount } from "@/__tests__/helpers";
 
 // Run with: pnpm test-ai writing-style
 
@@ -18,7 +19,7 @@ describe.runIf(isAiTest)(
     test("successfully analyzes writing style from emails", async () => {
       const result = await aiAnalyzeWritingStyle({
         emails: getTestEmails(),
-        user: getUser(),
+        emailAccount: getEmailAccount(),
       });
 
       expect(result).toHaveProperty("typicalLength");
@@ -31,7 +32,7 @@ describe.runIf(isAiTest)(
     test("handles empty emails array gracefully", async () => {
       const result = await aiAnalyzeWritingStyle({
         emails: [],
-        user: getUser(),
+        emailAccount: getEmailAccount(),
       });
 
       expect(result).toBeNull();
@@ -39,17 +40,6 @@ describe.runIf(isAiTest)(
   },
   15_000,
 ); // 15 second timeout
-
-function getUser() {
-  return {
-    id: "test-user-id",
-    email: "user@test.com",
-    aiModel: null,
-    aiProvider: null,
-    aiApiKey: null,
-    about: null,
-  };
-}
 
 function getTestEmails() {
   return [

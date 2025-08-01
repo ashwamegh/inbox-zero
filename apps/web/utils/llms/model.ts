@@ -13,19 +13,33 @@ import { createScopedLogger } from "@/utils/logger";
 
 const logger = createScopedLogger("llms/model");
 
-export function getModel(userAi: UserAIFields, useEconomyModel?: boolean) {
-  const data = useEconomyModel
-    ? selectEconomyModel(userAi)
-    : selectDefaultModel(userAi);
+export type ModelType = "default" | "economy" | "chat";
+
+export function getModel(
+  userAi: UserAIFields,
+  modelType: ModelType = "default",
+) {
+  const data = selectModelByType(userAi, modelType);
 
   logger.info("Using model", {
-    useEconomyModel,
+    modelType,
     provider: data.provider,
     model: data.model,
     providerOptions: data.providerOptions,
   });
 
   return data;
+}
+
+function selectModelByType(userAi: UserAIFields, modelType: ModelType) {
+  switch (modelType) {
+    case "economy":
+      return selectEconomyModel(userAi);
+    case "chat":
+      return selectChatModel(userAi);
+    default:
+      return selectDefaultModel(userAi);
+  }
 }
 
 function selectModel(
@@ -75,7 +89,7 @@ function selectModel(
       };
     }
     case Provider.OPENROUTER: {
-      const model = aiModel || Model.CLAUDE_3_7_SONNET_OPENROUTER;
+      const model = aiModel || Model.CLAUDE_4_SONNET_OPENROUTER;
       const openrouter = createOpenRouter({
         apiKey: aiApiKey || env.OPENROUTER_API_KEY,
         headers: {
@@ -102,7 +116,7 @@ function selectModel(
       };
     }
 
-    // this is messy. might be better to have two providers. one for bedrock and one for anthropic
+    // this is messy. better to have two providers. one for bedrock and one for anthropic
     case Provider.ANTHROPIC: {
       if (env.BEDROCK_ACCESS_KEY && env.BEDROCK_SECRET_KEY && !aiApiKey) {
         const model = aiModel || Model.CLAUDE_3_7_SONNET_BEDROCK;
@@ -134,9 +148,25 @@ function selectModel(
       }
     }
     default: {
-      throw new Error("LLM provider not supported");
+      logger.error("LLM provider not supported", { aiProvider });
+      throw new Error(`LLM provider not supported: ${aiProvider}`);
     }
   }
+}
+
+/**
+ * Creates OpenRouter provider options from a comma-separated string
+ */
+function createOpenRouterProviderOptions(
+  providers: string,
+): Record<string, any> {
+  return {
+    openrouter: {
+      provider: {
+        order: providers.split(",").map((p: string) => p.trim()),
+      },
+    },
+  };
 }
 
 /**
@@ -159,11 +189,62 @@ function selectEconomyModel(userAi: UserAIFields) {
       return selectDefaultModel(userAi);
     }
 
-    return selectModel({
-      aiProvider: env.ECONOMY_LLM_PROVIDER,
-      aiModel: env.ECONOMY_LLM_MODEL,
-      aiApiKey: apiKey,
-    });
+    // Configure OpenRouter provider options if using OpenRouter for economy
+    let providerOptions: Record<string, any> | undefined;
+    if (
+      env.ECONOMY_LLM_PROVIDER === Provider.OPENROUTER &&
+      env.ECONOMY_OPENROUTER_PROVIDERS
+    ) {
+      providerOptions = createOpenRouterProviderOptions(
+        env.ECONOMY_OPENROUTER_PROVIDERS,
+      );
+    }
+
+    return selectModel(
+      {
+        aiProvider: env.ECONOMY_LLM_PROVIDER,
+        aiModel: env.ECONOMY_LLM_MODEL,
+        aiApiKey: apiKey,
+      },
+      providerOptions,
+    );
+  }
+
+  return selectDefaultModel(userAi);
+}
+
+/**
+ * Selects the appropriate chat model for fast conversational tasks
+ */
+function selectChatModel(userAi: UserAIFields) {
+  if (env.CHAT_LLM_PROVIDER && env.CHAT_LLM_MODEL) {
+    const apiKey = getProviderApiKey(env.CHAT_LLM_PROVIDER);
+    if (!apiKey) {
+      logger.warn("Chat LLM provider configured but API key not found", {
+        provider: env.CHAT_LLM_PROVIDER,
+      });
+      return selectDefaultModel(userAi);
+    }
+
+    // Configure OpenRouter provider options if using OpenRouter for chat
+    let providerOptions: Record<string, any> | undefined;
+    if (
+      env.CHAT_LLM_PROVIDER === Provider.OPENROUTER &&
+      env.CHAT_OPENROUTER_PROVIDERS
+    ) {
+      providerOptions = createOpenRouterProviderOptions(
+        env.CHAT_OPENROUTER_PROVIDERS,
+      );
+    }
+
+    return selectModel(
+      {
+        aiProvider: env.CHAT_LLM_PROVIDER,
+        aiModel: env.CHAT_LLM_MODEL,
+        aiApiKey: apiKey,
+      },
+      providerOptions,
+    );
   }
 
   return selectDefaultModel(userAi);
@@ -174,33 +255,89 @@ function selectDefaultModel(userAi: UserAIFields) {
   const aiApiKey = userAi.aiApiKey;
   let aiProvider: string;
   let aiModel: string | null = null;
+  const providerOptions: Record<string, any> = {};
 
   // If user has not api key set, then use default model
   // If they do they can use the model of their choice
   if (aiApiKey) {
     aiProvider = userAi.aiProvider || defaultProvider;
-
-    if (userAi.aiModel) {
-      aiModel = userAi.aiModel;
-    }
+    aiModel = userAi.aiModel || null;
   } else {
     aiProvider = defaultProvider;
+    aiModel = env.DEFAULT_LLM_MODEL || null;
+
+    // Allow custom logic in production with fallbacks that doesn't impact self-hosters
+    if (aiProvider === Provider.CUSTOM) {
+      // choose randomly between bedrock sonnet 3.7, sonnet 4, and openrouter
+      const models = [
+        // {
+        //   provider: Provider.ANTHROPIC,
+        //   model: Model.CLAUDE_3_7_SONNET_BEDROCK,
+        // },
+        // {
+        //   provider: Provider.ANTHROPIC,
+        //   model: Model.CLAUDE_4_SONNET_BEDROCK,
+        // },
+        {
+          provider: Provider.OPENROUTER,
+          model: null,
+        },
+      ];
+
+      const selectedProviderAndModel =
+        models[Math.floor(Math.random() * models.length)];
+
+      aiProvider = selectedProviderAndModel.provider;
+      aiModel = selectedProviderAndModel.model;
+
+      if (aiProvider === Provider.OPENROUTER) {
+        function selectRandomModel() {
+          // to avoid rate limits, we'll select a random model
+          const models = [
+            "google/gemini-2.5-pro",
+            "anthropic/claude-sonnet-4",
+            // "anthropic/claude-3.7-sonnet",
+          ];
+          return models[Math.floor(Math.random() * models.length)];
+        }
+        aiModel = selectRandomModel() || null;
+        providerOptions.openrouter = {
+          models: [
+            "google/gemini-2.5-pro",
+            "anthropic/claude-sonnet-4",
+            // "anthropic/claude-3.7-sonnet",
+          ],
+          provider: {
+            // max 3 options
+            order: [
+              "Google Vertex",
+              "Google AI Studio",
+              "Anthropic",
+              // "Amazon Bedrock",
+            ],
+          },
+        };
+      } else {
+        return selectModel({
+          aiProvider: Provider.ANTHROPIC,
+          aiModel,
+          aiApiKey: null,
+        });
+      }
+    }
   }
 
-  const providerOptions: Record<string, any> = {};
-
-  // Add OpenRouter-specific provider options
-  // TODO: shouldn't be harded coded
-  if (defaultProvider === Provider.OPENROUTER) {
-    providerOptions.openrouter = {
-      models: [
-        "anthropic/claude-3.7-sonnet",
-        "google/gemini-2.5-pro-preview-03-25",
-      ],
-      provider: {
-        order: ["Amazon Bedrock", "Google AI Studio", "Anthropic"],
-      },
-    };
+  // Configure OpenRouter provider options if using OpenRouter for default model
+  // (but not overriding custom logic which already sets its own provider options)
+  if (
+    aiProvider === Provider.OPENROUTER &&
+    env.DEFAULT_OPENROUTER_PROVIDERS &&
+    !providerOptions.openrouter
+  ) {
+    const openRouterOptions = createOpenRouterProviderOptions(
+      env.DEFAULT_OPENROUTER_PROVIDERS,
+    );
+    Object.assign(providerOptions, openRouterOptions);
   }
 
   return selectModel(
@@ -213,17 +350,8 @@ function selectDefaultModel(userAi: UserAIFields) {
   );
 }
 
-function getProviderApiKey(
-  provider:
-    | "openai"
-    | "anthropic"
-    | "google"
-    | "groq"
-    | "openrouter"
-    | "bedrock"
-    | "ollama",
-) {
-  const providerApiKeys = {
+function getProviderApiKey(provider: string) {
+  const providerApiKeys: Record<string, string | undefined> = {
     [Provider.ANTHROPIC]: env.ANTHROPIC_API_KEY,
     [Provider.OPEN_AI]: env.OPENAI_API_KEY,
     [Provider.GOOGLE]: env.GOOGLE_API_KEY,

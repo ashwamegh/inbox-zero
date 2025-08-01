@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { chatCompletionTools } from "@/utils/llms";
-import type { UserAIFields } from "@/utils/llms/types";
+import type { EmailAccountWithAI } from "@/utils/llms/types";
 import {
   createRuleSchema,
   getCreateRuleSchemaWithCategories,
@@ -9,6 +9,7 @@ import {
 } from "@/utils/ai/rule/create-rule-schema";
 import { createScopedLogger } from "@/utils/logger";
 import { env } from "@/env";
+import { convertMentionsToLabels } from "@/utils/mention";
 
 const logger = createScopedLogger("ai-prompt-to-rules");
 
@@ -17,12 +18,12 @@ const updateRuleSchema = createRuleSchema.extend({
 });
 
 export async function aiPromptToRules({
-  user,
+  emailAccount,
   promptFile,
   isEditing,
   availableCategories,
 }: {
-  user: UserAIFields & { email: string };
+  emailAccount: EmailAccountWithAI;
   promptFile: string;
   isEditing: boolean;
   availableCategories?: string[];
@@ -56,10 +57,12 @@ export async function aiPromptToRules({
     hasSmartCategories: !!availableCategories?.length,
   });
 
+  const cleanedPromptFile = convertMentionsToLabels(promptFile);
+
   const prompt = `Convert the following prompt file into rules:
   
 <prompt>
-${promptFile}
+${cleanedPromptFile}
 </prompt>`;
 
   if (env.NODE_ENV === "development") {
@@ -71,7 +74,7 @@ ${promptFile}
   }
 
   const aiResponse = await chatCompletionTools({
-    userAi: user,
+    userAi: emailAccount.user,
     prompt,
     system,
     tools: {
@@ -80,13 +83,20 @@ ${promptFile}
         parameters,
       },
     },
-    userEmail: user.email,
+    userEmail: emailAccount.email,
     label: "Prompt to rules",
   });
 
-  const { rules } = aiResponse.toolCalls[0].args as {
+  const result = aiResponse.toolCalls?.[0]?.args as {
     rules: CreateOrUpdateRuleSchemaWithCategories[];
-  };
+  } | null;
+
+  if (!result) {
+    logger.error("No rules found in AI response", { aiResponse });
+    throw new Error("No rules found in AI response");
+  }
+
+  const { rules } = result;
 
   logger.trace("Output", { rules });
 

@@ -4,10 +4,10 @@ import { createHash } from "node:crypto";
 import groupBy from "lodash/groupBy";
 import { getMessage, getMessages } from "@/utils/gmail/message";
 import { findMatchingGroupItem } from "@/utils/group/find-matching-group";
-import { parseMessage } from "@/utils/mail";
+import { parseMessage } from "@/utils/gmail/message";
 import { extractEmailAddress } from "@/utils/email";
 import { type GroupItem, GroupItemType } from "@prisma/client";
-import type { MessageWithGroupItem } from "@/app/(app)/automation/rule/[ruleId]/examples/types";
+import type { MessageWithGroupItem } from "@/app/(app)/[emailAccountId]/assistant/rule/[ruleId]/examples/types";
 import { SafeError } from "@/utils/error";
 
 const PAGE_SIZE = 20;
@@ -23,21 +23,21 @@ export type GroupEmailsResponse = Awaited<ReturnType<typeof getGroupEmails>>;
 
 export async function getGroupEmails({
   groupId,
-  userId,
+  emailAccountId,
   gmail,
   from,
   to,
   pageToken,
 }: {
   groupId: string;
-  userId: string;
+  emailAccountId: string;
   gmail: gmail_v1.Gmail;
   from?: Date;
   to?: Date;
   pageToken?: string;
 }) {
   const group = await prisma.group.findUnique({
-    where: { id: groupId, userId },
+    where: { id: groupId, emailAccountId },
     include: { items: true },
   });
 
@@ -87,7 +87,7 @@ export async function fetchPaginatedMessages({
         // Group items have changed, start from the beginning
         paginationState = defaultPaginationState;
       }
-    } catch (error) {
+    } catch {
       // Invalid pageToken, start from the beginning
       paginationState = defaultPaginationState;
     }
@@ -222,6 +222,7 @@ async function fetchGroupMessages(
 
   const messages = await Promise.all(
     (response.messages || []).map(async (message) => {
+      // TODO: Use email provider to get the message which will parse it internally
       const m = await getMessage(message.id!, gmail);
       const parsedMessage = parseMessage(m);
       const matchingGroupItem = findMatchingGroupItem(

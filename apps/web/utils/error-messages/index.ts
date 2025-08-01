@@ -1,4 +1,7 @@
 import prisma from "@/utils/prisma";
+import { createScopedLogger } from "@/utils/logger";
+
+const logger = createScopedLogger("error-messages");
 
 // Used to store error messages for a user which we display in the UI
 
@@ -26,7 +29,7 @@ export async function addUserErrorMessage(
 ): Promise<void> {
   const user = await prisma.user.findUnique({ where: { email: userEmail } });
   if (!user) {
-    console.warn(`User ${userEmail} not found`);
+    logger.warn("User not found", { userEmail });
     return;
   }
 
@@ -46,7 +49,11 @@ export async function addUserErrorMessage(
   });
 }
 
-export async function clearUserErrorMessages(userId: string): Promise<void> {
+export async function clearUserErrorMessages({
+  userId,
+}: {
+  userId: string;
+}): Promise<void> {
   await prisma.user.update({
     where: { id: userId },
     data: { errorMessages: {} },

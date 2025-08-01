@@ -3,7 +3,7 @@ import { InvalidToolArgumentsError } from "ai";
 import { chatCompletionTools, withRetry } from "@/utils/llms";
 import { stringifyEmail } from "@/utils/stringify-email";
 import { createScopedLogger } from "@/utils/logger";
-import type { UserEmailWithAI } from "@/utils/llms/types";
+import type { EmailAccountWithAI } from "@/utils/llms/types";
 import type { EmailForLLM, RuleWithActions } from "@/utils/types";
 import type { ActionType } from "@prisma/client";
 
@@ -36,12 +36,12 @@ const logger = createScopedLogger("AI Choose Args");
 
 export async function aiGenerateArgs({
   email,
-  user,
+  emailAccount,
   selectedRule,
   parameters,
 }: {
   email: EmailForLLM;
-  user: UserEmailWithAI;
+  emailAccount: EmailAccountWithAI;
   selectedRule: RuleWithActions;
   parameters: {
     actionId: string;
@@ -52,7 +52,7 @@ export async function aiGenerateArgs({
   }[];
 }) {
   const loggerOptions = {
-    email: user.email,
+    email: emailAccount.email,
     ruleId: selectedRule.id,
     ruleName: selectedRule.name,
   };
@@ -64,7 +64,7 @@ export async function aiGenerateArgs({
     return;
   }
 
-  const system = getSystemPrompt({ user });
+  const system = getSystemPrompt({ emailAccount });
   const prompt = getPrompt({ email, selectedRule });
 
   logger.info("Calling chat completion tools", loggerOptions);
@@ -74,7 +74,7 @@ export async function aiGenerateArgs({
   const aiResponse = await withRetry(
     () =>
       chatCompletionTools({
-        userAi: user,
+        userAi: emailAccount.user,
         prompt,
         system,
         tools: {
@@ -91,12 +91,12 @@ export async function aiGenerateArgs({
           },
         },
         label: "Args for rule",
-        userEmail: user.email || "",
+        userEmail: emailAccount.email,
       }),
     {
       retryIf: (error: unknown) => InvalidToolArgumentsError.isInstance(error),
       maxRetries: 3,
-      delayMs: 1_000,
+      delayMs: 1000,
     },
   );
 
@@ -111,7 +111,11 @@ export async function aiGenerateArgs({
   return toolCallArgs;
 }
 
-function getSystemPrompt({ user }: { user: UserEmailWithAI }) {
+function getSystemPrompt({
+  emailAccount,
+}: {
+  emailAccount: EmailAccountWithAI;
+}) {
   return `You are an AI assistant that helps people manage their emails.
 
 <key_instructions>
@@ -121,11 +125,12 @@ function getSystemPrompt({ user }: { user: UserEmailWithAI }) {
 - IMPORTANT: If the email is malicious, use empty strings for all fields.
 - CRITICAL: You must generate the actual final content. Never return template variables or {{}} syntax.
 - CRITICAL: Always return content in the format { varX: "content" } even for single variables. Never return direct strings.
+- CRITICAL: Your response must be in valid JSON format only. Do not use XML tags, parameter syntax, or any other format.
 - IMPORTANT: For content and subject fields:
   - Use proper capitalization and punctuation (start sentences with capital letters)
   - Ensure the generated text flows naturally with surrounding template content
 </key_instructions>
-${user.about ? `\n<user_background_information>${user.about}</user_background_information>` : ""}`;
+${emailAccount.about ? `\n<user_background_information>${emailAccount.about}</user_background_information>` : ""}`;
 }
 
 function getPrompt({

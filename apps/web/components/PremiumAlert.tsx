@@ -2,19 +2,14 @@
 
 import Link from "next/link";
 import { CrownIcon } from "lucide-react";
-import { AlertWithButton } from "@/components/Alert";
 import { Button } from "@/components/ui/button";
-import {
-  hasAiAccess,
-  hasColdEmailAccess,
-  hasUnsubscribeAccess,
-  isPremium,
-} from "@/utils/premium";
+import { hasAiAccess, hasUnsubscribeAccess, isPremium } from "@/utils/premium";
 import { Tooltip } from "@/components/Tooltip";
 import { usePremiumModal } from "@/app/(app)/premium/PremiumModal";
 import { PremiumTier } from "@prisma/client";
-import { useUser } from "@/hooks/useUser";
 import { businessTierName } from "@/app/(app)/premium/config";
+import { useUser } from "@/hooks/useUser";
+import { ActionCard } from "@/components/ui/card";
 
 export function usePremium() {
   const swrResponse = useUser();
@@ -23,7 +18,10 @@ export function usePremium() {
   const premium = data?.premium;
   const aiApiKey = data?.aiApiKey;
 
-  const isUserPremium = !!(premium && isPremium(premium.lemonSqueezyRenewsAt));
+  const isUserPremium = !!(
+    premium &&
+    isPremium(premium.lemonSqueezyRenewsAt, premium.stripeSubscriptionStatus)
+  );
 
   const isProPlanWithoutApiKey =
     (premium?.tier === PremiumTier.PRO_MONTHLY ||
@@ -32,24 +30,18 @@ export function usePremium() {
 
   return {
     ...swrResponse,
+    premium,
     isPremium: isUserPremium,
     hasUnsubscribeAccess:
       isUserPremium ||
-      hasUnsubscribeAccess(
-        premium?.bulkUnsubscribeAccess,
-        premium?.unsubscribeCredits,
-      ),
-    hasAiAccess: hasAiAccess(premium?.aiAutomationAccess, aiApiKey),
-    hasColdEmailAccess: hasColdEmailAccess(
-      premium?.coldEmailBlockerAccess,
-      aiApiKey,
-    ),
+      hasUnsubscribeAccess(premium?.tier || null, premium?.unsubscribeCredits),
+    hasAiAccess: hasAiAccess(premium?.tier || null, aiApiKey),
     isProPlanWithoutApiKey,
     tier: premium?.tier,
   };
 }
 
-function PremiumAiAssistantAlert({
+export function PremiumAiAssistantAlert({
   showSetApiKey,
   className,
   tier,
@@ -66,38 +58,29 @@ function PremiumAiAssistantAlert({
   return (
     <div className={className}>
       {isBasicPlan ? (
-        <AlertWithButton
+        <ActionCard
+          icon={<CrownIcon className="h-5 w-5" />}
           title={`${businessTierName} Plan Required`}
-          description={
-            <>Switch to the {businessTierName} plan to use this feature.</>
-          }
-          icon={<CrownIcon className="h-4 w-4" />}
-          button={<Button onClick={openModal}>Switch Plan</Button>}
-          variant="blue"
+          description={`Switch to the ${businessTierName} plan to use this feature.`}
+          action={<Button onClick={openModal}>Switch Plan</Button>}
         />
       ) : showSetApiKey ? (
-        <AlertWithButton
+        <ActionCard
+          icon={<CrownIcon className="h-5 w-5" />}
           title="API Key Required"
           description="You need to set an AI API key to use this feature."
-          button={
-            <Button asChild variant="blue">
+          action={
+            <Button asChild>
               <Link href="/settings">Set API Key</Link>
             </Button>
           }
-          icon={<CrownIcon className="size-4" />}
-          variant="blue"
         />
       ) : (
-        <AlertWithButton
-          title="Premium"
+        <ActionCard
+          icon={<CrownIcon className="h-5 w-5" />}
+          title="Premium Feature"
           description={`This is a premium feature. Upgrade to the ${businessTierName} plan.`}
-          button={
-            <Button onClick={openModal} variant="blue">
-              Upgrade
-            </Button>
-          }
-          icon={<CrownIcon className="size-4" />}
-          variant="blue"
+          action={<Button onClick={openModal}>Upgrade</Button>}
         />
       )}
       <PremiumModal />

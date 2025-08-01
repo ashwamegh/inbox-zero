@@ -1,11 +1,11 @@
-import React from "react";
+import { forwardRef } from "react";
 import type { FieldError } from "react-hook-form";
 import { cn } from "@/utils";
 import { ErrorMessage, ExplainText, Label } from "@/components/Input";
 
 interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
   name: string;
-  label: string;
+  label?: string;
   tooltipText?: string;
   options: Array<{ label: string; value: string | number }>;
   explainText?: string;
@@ -13,7 +13,7 @@ interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
   disabled?: boolean;
 }
 
-export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
+export const Select = forwardRef<HTMLSelectElement, SelectProps>(
   (props, ref) => {
     const { label, tooltipText, options, explainText, error, ...selectProps } =
       props;

@@ -1,26 +1,27 @@
-import type { gmail_v1 } from "@googleapis/gmail";
 import { after } from "next/server";
 import type {
   ParsedMessage,
   RuleWithActionsAndCategories,
 } from "@/utils/types";
-import type { UserAIFields } from "@/utils/llms/types";
-import {
-  ExecutedRuleStatus,
-  Prisma,
-  type Rule,
-  type User,
-} from "@prisma/client";
+import type { EmailAccountWithAI } from "@/utils/llms/types";
+import { ExecutedRuleStatus, type Prisma, type Rule } from "@prisma/client";
 import type { ActionItem } from "@/utils/ai/types";
 import { findMatchingRule } from "@/utils/ai/choose-rule/match-rules";
 import { getActionItemsWithAiArgs } from "@/utils/ai/choose-rule/choose-args";
 import { executeAct } from "@/utils/ai/choose-rule/execute";
 import prisma from "@/utils/prisma";
+import { isDuplicateError } from "@/utils/prisma-helpers";
 import { createScopedLogger } from "@/utils/logger";
 import type { MatchReason } from "@/utils/ai/choose-rule/types";
 import { sanitizeActionFields } from "@/utils/action-item";
 import { extractEmailAddress } from "@/utils/email";
 import { analyzeSenderPattern } from "@/app/api/ai/analyze-sender-pattern/call-analyze-pattern-api";
+import {
+  scheduleDelayedActions,
+  cancelScheduledActions,
+} from "@/utils/scheduled-actions/scheduler";
+import groupBy from "lodash/groupBy";
+import type { EmailProvider } from "@/utils/email/provider";
 
 const logger = createScopedLogger("ai-run-rules");
 
@@ -33,21 +34,31 @@ export type RunRulesResult = {
 };
 
 export async function runRules({
-  gmail,
+  client,
   message,
   rules,
-  user,
+  emailAccount,
   isTest,
 }: {
-  gmail: gmail_v1.Gmail;
+  client: EmailProvider;
   message: ParsedMessage;
   rules: RuleWithActionsAndCategories[];
-  user: Pick<User, "id" | "email" | "about"> & UserAIFields;
+  emailAccount: EmailAccountWithAI;
   isTest: boolean;
 }): Promise<RunRulesResult> {
-  const result = await findMatchingRule(rules, message, user, gmail);
+  const result = await findMatchingRule({
+    rules,
+    message,
+    emailAccount,
+    client,
+  });
 
-  analyzeSenderPatternIfAiMatch(isTest, result, message, user);
+  analyzeSenderPatternIfAiMatch({
+    isTest,
+    result,
+    message,
+    emailAccountId: emailAccount.id,
+  });
 
   logger.trace("Matching rule", { result });
 
@@ -55,15 +66,15 @@ export async function runRules({
     return await executeMatchedRule(
       result.rule,
       message,
-      user,
-      gmail,
+      emailAccount,
+      client,
       result.reason,
       result.matchReasons,
       isTest,
     );
   } else {
     await saveSkippedExecutedRule({
-      userId: user.id,
+      emailAccountId: emailAccount.id,
       threadId: message.threadId,
       messageId: message.id,
       reason: result.reason,
@@ -75,8 +86,8 @@ export async function runRules({
 async function executeMatchedRule(
   rule: RuleWithActionsAndCategories,
   message: ParsedMessage,
-  user: Pick<User, "id" | "email" | "about"> & UserAIFields,
-  gmail: gmail_v1.Gmail,
+  emailAccount: EmailAccountWithAI,
+  client: EmailProvider,
   reason: string | undefined,
   matchReasons: MatchReason[] | undefined,
   isTest: boolean,
@@ -84,33 +95,62 @@ async function executeMatchedRule(
   // get action items with args
   const actionItems = await getActionItemsWithAiArgs({
     message,
-    user,
+    emailAccount,
     selectedRule: rule,
-    gmail,
+    client,
   });
+
+  if (!isTest) {
+  }
+
+  const { immediateActions, delayedActions } = groupBy(actionItems, (item) =>
+    item.delayInMinutes != null && item.delayInMinutes > 0
+      ? "delayedActions"
+      : "immediateActions",
+  );
 
   // handle action
   const executedRule = isTest
     ? undefined
     : await saveExecutedRule(
         {
-          userId: user.id,
+          emailAccountId: emailAccount.id,
           threadId: message.threadId,
           messageId: message.id,
         },
         {
           rule,
-          actionItems,
+          actionItems: immediateActions, // Only save immediate actions as ExecutedActions
           reason,
         },
       );
 
-  const shouldExecute = executedRule && rule.automate;
+  if (executedRule && delayedActions?.length > 0 && !isTest) {
+    // Attempts to cancel any existing scheduled actions to avoid duplicates
+    await cancelScheduledActions({
+      emailAccountId: emailAccount.id,
+      messageId: message.id,
+      threadId: message.threadId,
+      reason: "Superseded by new rule execution",
+    });
+    await scheduleDelayedActions({
+      executedRuleId: executedRule.id,
+      actionItems: delayedActions,
+      messageId: message.id,
+      threadId: message.threadId,
+      emailAccountId: emailAccount.id,
+    });
+  }
+
+  const shouldExecute =
+    executedRule && rule.automate && immediateActions.length > 0;
 
   if (shouldExecute) {
     await executeAct({
-      gmail,
-      userEmail: user.email || "",
+      client,
+      userEmail: emailAccount.email,
+      userId: emailAccount.userId,
+      emailAccountId: emailAccount.id,
       executedRule,
       message,
     });
@@ -126,12 +166,12 @@ async function executeMatchedRule(
 }
 
 async function saveSkippedExecutedRule({
-  userId,
+  emailAccountId,
   threadId,
   messageId,
   reason,
 }: {
-  userId: string;
+  emailAccountId: string;
   threadId: string;
   messageId: string;
   reason?: string;
@@ -142,11 +182,11 @@ async function saveSkippedExecutedRule({
     automated: true,
     reason,
     status: ExecutedRuleStatus.SKIPPED,
-    user: { connect: { id: userId } },
+    emailAccount: { connect: { id: emailAccountId } },
   };
 
   await upsertExecutedRule({
-    userId,
+    emailAccountId,
     threadId,
     messageId,
     data,
@@ -155,11 +195,11 @@ async function saveSkippedExecutedRule({
 
 async function saveExecutedRule(
   {
-    userId,
+    emailAccountId,
     threadId,
     messageId,
   }: {
-    userId: string;
+    emailAccountId: string;
     threadId: string;
     messageId: string;
   },
@@ -176,7 +216,12 @@ async function saveExecutedRule(
   const data: Prisma.ExecutedRuleCreateInput = {
     actionItems: {
       createMany: {
-        data: actionItems?.map(sanitizeActionFields) || [],
+        data:
+          actionItems?.map((item) => {
+            const { delayInMinutes, ...executedActionFields } =
+              sanitizeActionFields(item);
+            return executedActionFields;
+          }) || [],
       },
     },
     messageId,
@@ -185,19 +230,24 @@ async function saveExecutedRule(
     status: ExecutedRuleStatus.PENDING,
     reason,
     rule: rule?.id ? { connect: { id: rule.id } } : undefined,
-    user: { connect: { id: userId } },
+    emailAccount: { connect: { id: emailAccountId } },
   };
 
-  return await upsertExecutedRule({ userId, threadId, messageId, data });
+  return await upsertExecutedRule({
+    emailAccountId,
+    threadId,
+    messageId,
+    data,
+  });
 }
 
 async function upsertExecutedRule({
-  userId,
+  emailAccountId,
   threadId,
   messageId,
   data,
 }: {
-  userId: string;
+  emailAccountId: string;
   threadId: string;
   messageId: string;
   data: Prisma.ExecutedRuleCreateInput;
@@ -205,8 +255,8 @@ async function upsertExecutedRule({
   try {
     return await prisma.executedRule.upsert({
       where: {
-        unique_user_thread_message: {
-          userId,
+        unique_emailAccount_thread_message: {
+          emailAccountId,
           threadId,
           messageId,
         },
@@ -216,21 +266,18 @@ async function upsertExecutedRule({
       include: { actionItems: true },
     });
   } catch (error) {
-    if (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === "P2002"
-    ) {
+    if (isDuplicateError(error)) {
       // Unique constraint violation, ignore the error
       // May be due to a race condition?
       logger.info("Ignored duplicate entry for ExecutedRule", {
-        userId,
+        emailAccountId,
         threadId,
         messageId,
       });
       return await prisma.executedRule.findUnique({
         where: {
-          unique_user_thread_message: {
-            userId,
+          unique_emailAccount_thread_message: {
+            emailAccountId,
             threadId,
             messageId,
           },
@@ -243,12 +290,17 @@ async function upsertExecutedRule({
   }
 }
 
-async function analyzeSenderPatternIfAiMatch(
-  isTest: boolean,
-  result: { rule?: Rule | null; matchReasons?: MatchReason[] },
-  message: ParsedMessage,
-  user: Pick<User, "id">,
-) {
+async function analyzeSenderPatternIfAiMatch({
+  isTest,
+  result,
+  message,
+  emailAccountId,
+}: {
+  isTest: boolean;
+  result: { rule?: Rule | null; matchReasons?: MatchReason[] };
+  message: ParsedMessage;
+  emailAccountId: string;
+}) {
   if (
     !isTest &&
     result.rule &&
@@ -265,7 +317,7 @@ async function analyzeSenderPatternIfAiMatch(
     if (fromAddress) {
       after(() =>
         analyzeSenderPattern({
-          userId: user.id,
+          emailAccountId,
           from: fromAddress,
         }),
       );

@@ -35,38 +35,60 @@ export function Hero(props: {
   title?: React.ReactNode;
   subtitle?: React.ReactNode;
   image?: string;
+  CTAComponent?: React.ComponentType;
+  hideProductHuntBadge?: boolean;
+  video?: React.ReactNode;
 }) {
+  const CTAComponent = props.CTAComponent || CTAButtons;
+
   return (
     <div className="relative pt-14">
       <SquaresPattern />
       <div className="pt-24 sm:pb-12 sm:pt-32">
         <div className="mx-auto max-w-7xl px-6 lg:px-8">
-          {/* <HeroTag /> */}
-          <div className="mb-10">
-            <ProductHuntBadge />
-          </div>
+          {!props.hideProductHuntBadge && (
+            <div className="mb-10 flex flex-col items-center justify-center gap-4">
+              <ProductHuntBadge />
+              {/* <a
+                href="https://www.producthunt.com/products/inbox-zero-tabs"
+                target="_blank"
+                rel="noreferrer"
+                className="mx-auto flex max-w-fit animate-fade-up items-center justify-center space-x-2 overflow-hidden rounded-full bg-green-50 px-7 py-2 transition-colors hover:bg-green-100"
+              >
+                <LayoutPanelTopIcon className="h-5 w-5 text-green-600" />
+                <p className="text-sm font-semibold text-green-600">
+                  Inbox Zero Tabs is live on Product Hunt!
+                </p>
+              </a> */}
+            </div>
+          )}
 
           <div className="mx-auto max-w-xl text-center">
             <HeroText>
-              {props.title || "Stop wasting half your day in Gmail"}
+              {props.title ||
+                "Meet Your AI Email Assistant That Actually Works"}
             </HeroText>
             <HeroSubtitle>
               {props.subtitle ||
-                "Automate your email with AI, bulk unsubscribe from newsletters, and block cold emails. Open-source."}
+                "Cut your email time in half. Inbox Zero intelligently automates responses, organizes your inbox, and helps you reach inbox zero in record time. For Gmail and Outlook."}
             </HeroSubtitle>
-            <CTAButtons />
+            <CTAComponent />
           </div>
 
           <LogoCloud />
 
           <div className="relative mt-16 flow-root sm:mt-24">
-            <HeroVideoDialog
-              className="block"
-              animationStyle="top-in-bottom-out"
-              videoSrc="https://www.youtube.com/embed/hfvKvTHBjG0?autoplay=1&rel=0"
-              thumbnailSrc={props.image || "/images/home/bulk-unsubscriber.png"}
-              thumbnailAlt="Bulk Unsubscriber Screenshot"
-            />
+            {props.video || (
+              <HeroVideoDialog
+                className="block"
+                animationStyle="top-in-bottom-out"
+                videoSrc="https://www.youtube.com/embed/hfvKvTHBjG0?autoplay=1&rel=0"
+                thumbnailSrc={
+                  props.image || "/images/home/bulk-unsubscriber.png"
+                }
+                thumbnailAlt="Bulk Unsubscriber Screenshot"
+              />
+            )}
           </div>
         </div>
       </div>
@@ -74,31 +96,12 @@ export function Hero(props: {
   );
 }
 
-// function HeroTag() {
-//   return (
-//     <div className="mb-8 flex justify-center bg-white">
-//       <div className="relative flex items-center gap-x-4 rounded-full px-4 py-1 text-sm leading-6 text-gray-600 ring-1 ring-gray-900/10 hover:ring-gray-900/20">
-//         <a
-//           href="/product-hunt"
-//           className="flex items-center gap-x-1 font-semibold text-blue-600"
-//         >
-//           <span className="absolute inset-0" aria-hidden="true" />
-//           We are live on Product Hunt!
-//           <ChevronRightIcon
-//             className="-mr-2 h-5 w-5 text-gray-400"
-//             aria-hidden="true"
-//           />
-//         </a>
-//       </div>
-//     </div>
-//   );
-// }
-
 function ProductHuntBadge() {
   return (
     <div className="flex flex-col items-center justify-center gap-2 sm:flex-row">
       <Link
-        href="https://www.producthunt.com/posts/inbox-zero-2?utm_source=badge-top-post-badge&utm_medium=badge&utm_souce=badge-inbox&#0045;zero&#0045;2"
+        // href="https://www.producthunt.com/posts/inbox-zero-2?utm_source=badge-top-post-badge&utm_medium=badge&utm_souce=badge-inbox&#0045;zero&#0045;2"
+        href="https://www.producthunt.com/products/inbox-zero-tabs"
         target="_blank"
         rel="noreferrer"
       >

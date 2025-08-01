@@ -9,6 +9,9 @@ import type {
   CreateRuleBody,
   ZodCondition,
 } from "@/utils/actions/rule.validation";
+import { createScopedLogger } from "@/utils/logger";
+
+const logger = createScopedLogger("condition");
 
 export type RuleConditions = Partial<
   Pick<
@@ -150,7 +153,7 @@ export const flattenConditions = (
         acc.categoryFilters = condition.categoryFilters;
         break;
       default:
-        console.log(`Unhandled condition type: ${condition.type}`);
+        logger.warn("Unknown condition type", { condition });
         // biome-ignore lint/correctness/noSwitchDeclarations: intentional exhaustive check
         const exhaustiveCheck: never = condition.type;
         return exhaustiveCheck;
@@ -195,14 +198,14 @@ export function conditionsToString(rule: RuleConditions) {
 
   // Static conditions - grouped with commas
   const staticConditions: string[] = [];
-  if (rule.from) staticConditions.push(`From: "${rule.from}"`);
+  if (rule.from) staticConditions.push(`From: ${rule.from}`);
   if (rule.subject) staticConditions.push(`Subject: "${rule.subject}"`);
-  if (rule.to) staticConditions.push(`To: "${rule.to}"`);
+  if (rule.to) staticConditions.push(`To: ${rule.to}`);
   if (rule.body) staticConditions.push(`Body: "${rule.body}"`);
   if (staticConditions.length) conditions.push(staticConditions.join(", "));
 
   // AI condition
-  if (rule.instructions) conditions.push(`AI: ${rule.instructions}`);
+  if (rule.instructions) conditions.push(rule.instructions);
 
   // Category condition
   const categoryFilters = rule.categoryFilters;

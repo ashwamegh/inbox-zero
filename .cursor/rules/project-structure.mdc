@@ -1,8 +1,9 @@
 ---
 description: Project structure and file organization guidelines
-globs: 
+globs:
 alwaysApply: false
 ---
+
 # Project Structure
 
 ## Main Structure
@@ -18,7 +19,7 @@ alwaysApply: false
 │   ├── web/             # Main Next.js application
 │   │   ├── app/         # Next.js App Router
 │   │   │   ├── (app)/   # Main application pages
-│   │   │   │   ├── automation/     # AI assistant feature
+│   │   │   │   ├── assistant/     # AI assistant feature
 │   │   │   │   ├── reply-zero/     # Reply Zero feature
 │   │   │   │   ├── settings/       # User settings
 │   │   │   │   ├── setup/          # Main onboarding
@@ -68,7 +69,6 @@ alwaysApply: false
 │   └── unsubscriber/    # Automates unsubscribes using browser automation. Not currently in use
 ├── packages
     ├── tinybird/
-    ├── eslint-config/
     ├── loops/
     ├── resend/
     ├── tinybird-ai-analytics/

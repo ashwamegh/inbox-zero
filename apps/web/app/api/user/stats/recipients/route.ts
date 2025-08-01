@@ -3,11 +3,9 @@ import { z } from "zod";
 import countBy from "lodash/countBy";
 import sortBy from "lodash/sortBy";
 import type { gmail_v1 } from "@googleapis/gmail";
-import { auth } from "@/app/api/auth/[...nextauth]/auth";
-import { parseMessage } from "@/utils/mail";
+import { parseMessage } from "@/utils/gmail/message";
 import { getMessage, getMessages } from "@/utils/gmail/message";
-import { extractDomainFromEmail } from "@/utils/email";
-import { withError } from "@/utils/middleware";
+import { withEmailAccount } from "@/utils/middleware";
 import { getEmailFieldStats } from "@/app/api/user/stats/helpers";
 
 const recipientStatsQuery = z.object({
@@ -20,7 +18,7 @@ export interface RecipientsResponse {
   mostActiveRecipientEmails: { name: string; value: number }[];
 }
 
-async function getRecipients({
+async function _getRecipients({
   gmail,
 }: {
   gmail: gmail_v1.Gmail;
@@ -33,6 +31,7 @@ async function getRecipients({
   // be careful of rate limiting here
   const messages = await Promise.all(
     res.messages?.map(async (m) => {
+      // TODO: Use email provider to get the message which will parse it internally
       const message = await getMessage(m.id!, gmail);
       return parseMessage(message);
     }) || [],
@@ -52,7 +51,7 @@ async function getRecipients({
 }
 
 async function getRecipientStatistics(
-  options: RecipientStatsQuery & { userId: string },
+  options: RecipientStatsQuery & { emailAccountId: string },
 ): Promise<RecipientsResponse> {
   const [mostReceived] = await Promise.all([getMostSentTo(options)]);
 
@@ -70,14 +69,14 @@ async function getRecipientStatistics(
  * Get most sent to recipients by email address
  */
 async function getMostSentTo({
-  userId,
+  emailAccountId,
   fromDate,
   toDate,
 }: RecipientStatsQuery & {
-  userId: string;
+  emailAccountId: string;
 }) {
   return getEmailFieldStats({
-    userId,
+    emailAccountId,
     fromDate,
     toDate,
     field: "to",
@@ -85,11 +84,8 @@ async function getMostSentTo({
   });
 }
 
-export const GET = withError(async (request) => {
-  const session = await auth();
-  if (!session?.user.email)
-    return NextResponse.json({ error: "Not authenticated" });
-
+export const GET = withEmailAccount(async (request) => {
+  const emailAccountId = request.auth.emailAccountId;
   const { searchParams } = new URL(request.url);
   const query = recipientStatsQuery.parse({
     fromDate: searchParams.get("fromDate"),
@@ -98,7 +94,7 @@ export const GET = withError(async (request) => {
 
   const result = await getRecipientStatistics({
     ...query,
-    userId: session.user.id,
+    emailAccountId,
   });
 
   return NextResponse.json(result);

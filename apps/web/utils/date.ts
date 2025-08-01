@@ -7,6 +7,11 @@ export const ONE_DAY_MS = ONE_HOUR_MS * 24;
 export const ONE_MONTH_MS = ONE_DAY_MS * 30;
 export const ONE_YEAR_MS = ONE_DAY_MS * 365;
 
+export const ONE_HOUR_MINUTES = 60;
+export const ONE_DAY_MINUTES = ONE_HOUR_MINUTES * 24;
+export const ONE_WEEK_MINUTES = ONE_DAY_MINUTES * 7;
+export const NINETY_DAYS_MINUTES = ONE_DAY_MINUTES * 90;
+
 /**
  * Formats a date into a short string.
  * - If the date is today, returns the time (e.g., "3:44 PM").
@@ -54,7 +59,12 @@ export function dateToSeconds(date: Date) {
 export function internalDateToDate(internalDate?: string | null): Date {
   if (!internalDate) return new Date();
 
-  const date = new Date(+internalDate);
+  // First try to parse as a regular date string (for ISO strings like "2025-06-19T21:46:31Z")
+  let date = new Date(internalDate);
+  if (!Number.isNaN(date.getTime())) return date;
+
+  // Fallback to the old behavior for numeric timestamps
+  date = new Date(+internalDate);
   if (Number.isNaN(date.getTime())) return new Date();
 
   return date;

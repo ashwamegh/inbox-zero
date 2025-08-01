@@ -1,4 +1,5 @@
-import prisma, { isDuplicateError } from "@/utils/prisma";
+import prisma from "@/utils/prisma";
+import { isDuplicateError } from "@/utils/prisma-helpers";
 import type { GroupItemType } from "@prisma/client";
 import { captureException } from "@/utils/error";
 
@@ -6,6 +7,7 @@ export async function addGroupItem(data: {
   groupId: string;
   type: GroupItemType;
   value: string;
+  exclude?: boolean;
 }) {
   try {
     return await prisma.groupItem.create({ data });
@@ -20,10 +22,12 @@ export async function addGroupItem(data: {
 
 export async function deleteGroupItem({
   id,
-  userId,
+  emailAccountId,
 }: {
   id: string;
-  userId: string;
+  emailAccountId: string;
 }) {
-  await prisma.groupItem.delete({ where: { id, group: { userId } } });
+  await prisma.groupItem.delete({
+    where: { id, group: { emailAccountId } },
+  });
 }

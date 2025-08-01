@@ -1,20 +1,19 @@
-import type { gmail_v1 } from "@googleapis/gmail";
 import prisma from "@/utils/prisma";
 import { ActionType } from "@prisma/client";
-import { deleteDraft, getDraft } from "@/utils/gmail/draft";
 import type { ExecutedRule } from "@prisma/client";
 import type { Logger } from "@/utils/logger";
+import type { EmailProvider } from "@/utils/email/provider";
 
 /**
  * Handles finding and potentially deleting a previous AI-generated draft for a thread.
  */
 export async function handlePreviousDraftDeletion({
-  gmail,
+  client,
   executedRule,
   logger,
 }: {
-  gmail: gmail_v1.Gmail;
-  executedRule: Pick<ExecutedRule, "id" | "threadId" | "userId">;
+  client: EmailProvider;
+  executedRule: Pick<ExecutedRule, "id" | "threadId" | "emailAccountId">;
   logger: Logger;
 }) {
   try {
@@ -22,12 +21,13 @@ export async function handlePreviousDraftDeletion({
     const previousDraftAction = await prisma.executedAction.findFirst({
       where: {
         executedRule: {
-          threadId: executedRule.threadId, // Match threadId
-          userId: executedRule.userId, // Match userId for safety
+          threadId: executedRule.threadId,
+          emailAccountId: executedRule.emailAccountId,
         },
         type: ActionType.DRAFT_EMAIL,
         draftId: { not: null }, // Ensure it has a draftId
-        executedRuleId: { not: executedRule.id }, // Explicitly exclude actions from the current rule execution
+        executedRuleId: { not: executedRule.id }, // Explicitly exclude current executedRule from the current rule execution
+        draftSendLog: null, // Only consider drafts not logged as sent
       },
       orderBy: {
         createdAt: "desc", // Get the most recent one
@@ -45,17 +45,30 @@ export async function handlePreviousDraftDeletion({
       });
 
       // Fetch the current state of the draft
-      const currentDraftDetails = await getDraft(
+      const currentDraftDetails = await client.getDraft(
         previousDraftAction.draftId,
-        gmail,
       );
 
       if (currentDraftDetails?.textPlain) {
         // Basic comparison: Compare original content with current plain text
-        const quoteHeaderRegex = /\n\nOn .* wrote:/;
-        const currentReplyContent = currentDraftDetails.textPlain
-          .split(quoteHeaderRegex)[0]
-          ?.trim();
+        // Try multiple quote header patterns
+        const quoteHeaderPatterns = [
+          /\n\nOn .* wrote:/,
+          /\n\n----+ Original Message ----+/,
+          /\n\n>+ On .*/,
+          /\n\nFrom: .*/,
+        ];
+
+        let currentReplyContent = currentDraftDetails.textPlain;
+        for (const pattern of quoteHeaderPatterns) {
+          const parts = currentReplyContent.split(pattern);
+          if (parts.length > 1) {
+            currentReplyContent = parts[0];
+            break;
+          }
+        }
+        currentReplyContent = currentReplyContent.trim();
+
         const originalContent = previousDraftAction.content?.trim();
 
         logger.info("Comparing draft content", {
@@ -65,7 +78,17 @@ export async function handlePreviousDraftDeletion({
 
         if (originalContent === currentReplyContent) {
           logger.info("Draft content matches, deleting draft.");
-          await deleteDraft(gmail, previousDraftAction.draftId);
+
+          // Delete the draft and mark as not sent
+          await Promise.all([
+            client.deleteDraft(previousDraftAction.draftId),
+            prisma.executedAction.update({
+              where: { id: previousDraftAction.id },
+              data: { wasDraftSent: false },
+            }),
+          ]);
+
+          logger.info("Deleted draft and updated action status.");
         } else {
           logger.info("Draft content modified by user, skipping deletion.");
         }
@@ -99,7 +122,7 @@ export async function updateExecutedActionWithDraftId({
   try {
     await prisma.executedAction.update({
       where: { id: actionId },
-      data: { draftId: draftId },
+      data: { draftId },
     });
     logger.info("Updated executed action with draft ID", { actionId, draftId });
   } catch (error) {
@@ -108,6 +131,5 @@ export async function updateExecutedActionWithDraftId({
       draftId,
       error,
     });
-    // Depending on requirements, you might want to re-throw or handle this error differently.
   }
 }

@@ -5,16 +5,7 @@ export const changePremiumStatusSchema = z.object({
   email: z.string().email(),
   lemonSqueezyCustomerId: z.coerce.number().optional(),
   emailAccountsAccess: z.coerce.number().optional(),
-  period: z.enum([
-    PremiumTier.BASIC_MONTHLY,
-    PremiumTier.BASIC_ANNUALLY,
-    PremiumTier.PRO_MONTHLY,
-    PremiumTier.PRO_ANNUALLY,
-    PremiumTier.BUSINESS_MONTHLY,
-    PremiumTier.BUSINESS_ANNUALLY,
-    PremiumTier.COPILOT_MONTHLY,
-    PremiumTier.LIFETIME,
-  ]),
+  period: z.nativeEnum(PremiumTier),
   count: z.coerce.number().optional(),
   upgrade: z.boolean(),
 });

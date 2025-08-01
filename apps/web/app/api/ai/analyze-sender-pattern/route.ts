@@ -2,16 +2,16 @@ import { NextResponse, after } from "next/server";
 import { headers } from "next/headers";
 import type { gmail_v1 } from "@googleapis/gmail";
 import { z } from "zod";
-import { getGmailClient } from "@/utils/gmail/client";
+import { getGmailClientWithRefresh } from "@/utils/gmail/client";
 import { withError } from "@/utils/middleware";
 import prisma from "@/utils/prisma";
 import { createScopedLogger } from "@/utils/logger";
 import { aiDetectRecurringPattern } from "@/utils/ai/choose-rule/ai-detect-recurring-pattern";
 import { isValidInternalApiKey } from "@/utils/internal-api";
-import { GroupItemType } from "@prisma/client";
 import { getThreadMessages, getThreads } from "@/utils/gmail/thread";
 import { extractEmailAddress } from "@/utils/email";
 import { getEmailForLLM } from "@/utils/get-email-from-message";
+import { saveLearnedPattern } from "@/utils/rule/learned-patterns";
 
 export const maxDuration = 60;
 
@@ -21,26 +21,27 @@ const MAX_RESULTS = 10;
 const logger = createScopedLogger("api/ai/pattern-match");
 
 const schema = z.object({
-  userId: z.string(),
+  emailAccountId: z.string(),
   from: z.string(),
 });
 export type AnalyzeSenderPatternBody = z.infer<typeof schema>;
 
 export const POST = withError(async (request) => {
-  if (!isValidInternalApiKey(await headers())) {
-    logger.error("Invalid API key");
+  const json = await request.json();
+
+  if (!isValidInternalApiKey(await headers(), logger)) {
+    logger.error("Invalid API key for sender pattern analysis", json);
     return NextResponse.json({ error: "Invalid API key" });
   }
 
-  const json = await request.json();
   const data = schema.parse(json);
-  const { userId } = data;
+  const { emailAccountId } = data;
   const from = extractEmailAddress(data.from);
 
-  logger.trace("Analyzing sender pattern", { userId, from });
+  logger.trace("Analyzing sender pattern", { emailAccountId, from });
 
   // return immediately and process in background
-  after(() => process({ userId, from }));
+  after(() => process({ emailAccountId, from }));
   return NextResponse.json({ processing: true });
 });
 
@@ -52,35 +53,48 @@ export const POST = withError(async (request) => {
  * 4. Detects patterns using AI
  * 5. Stores patterns in DB for future categorization
  */
-async function process({ userId, from }: { userId: string; from: string }) {
+async function process({
+  emailAccountId,
+  from,
+}: {
+  emailAccountId: string;
+  from: string;
+}) {
   try {
+    const emailAccount = await getEmailAccountWithRules({ emailAccountId });
+
+    if (!emailAccount) {
+      logger.error("Email account not found", { emailAccountId });
+      return NextResponse.json({ success: false }, { status: 404 });
+    }
+
     // Check if we've already analyzed this sender
     const existingCheck = await prisma.newsletter.findUnique({
-      where: { email_userId: { email: extractEmailAddress(from), userId } },
+      where: {
+        email_emailAccountId: {
+          email: extractEmailAddress(from),
+          emailAccountId: emailAccount.id,
+        },
+      },
     });
 
     if (existingCheck?.patternAnalyzed) {
-      logger.info("Sender has already been analyzed", { from, userId });
+      logger.info("Sender has already been analyzed", { from, emailAccountId });
       return NextResponse.json({ success: true });
     }
 
-    const user = await getUserWithRules(userId);
+    const account = emailAccount.account;
 
-    if (!user) {
-      logger.error("User not found", { userId });
+    if (!account?.access_token || !account?.refresh_token) {
+      logger.error("No Gmail account found", { emailAccountId });
       return NextResponse.json({ success: false }, { status: 404 });
     }
 
-    const account = user.accounts[0];
-
-    if (!account.access_token || !account.refresh_token) {
-      logger.error("No Gmail account found", { userId });
-      return NextResponse.json({ success: false }, { status: 404 });
-    }
-
-    const gmail = getGmailClient({
+    const gmail = await getGmailClientWithRefresh({
       accessToken: account.access_token,
       refreshToken: account.refresh_token,
+      expiresAt: account.expires_at,
+      emailAccountId,
     });
 
     // Get threads from this sender
@@ -94,7 +108,7 @@ async function process({ userId, from }: { userId: string; from: string }) {
     if (threadsWithMessages.length === 0) {
       logger.info("No threads found from this sender", {
         from,
-        userId,
+        emailAccountId,
       });
 
       // Don't record a check since we didn't run the AI analysis
@@ -109,7 +123,7 @@ async function process({ userId, from }: { userId: string; from: string }) {
     if (allMessages.length < THRESHOLD_EMAILS) {
       logger.info("Not enough emails found from this sender", {
         from,
-        userId,
+        emailAccountId,
         count: allMessages.length,
       });
 
@@ -123,15 +137,8 @@ async function process({ userId, from }: { userId: string; from: string }) {
     // Detect pattern using AI
     const patternResult = await aiDetectRecurringPattern({
       emails,
-      user: {
-        id: user.id,
-        email: user.email || "",
-        about: user.about,
-        aiProvider: user.aiProvider,
-        aiModel: user.aiModel,
-        aiApiKey: user.aiApiKey,
-      },
-      rules: user.rules.map((rule) => ({
+      emailAccount,
+      rules: emailAccount.rules.map((rule) => ({
         name: rule.name,
         instructions: rule.instructions || "",
       })),
@@ -140,20 +147,20 @@ async function process({ userId, from }: { userId: string; from: string }) {
     if (patternResult?.matchedRule) {
       // Save pattern to DB (adds sender to rule's group)
       await saveLearnedPattern({
-        userId,
+        emailAccountId,
         from,
         ruleName: patternResult.matchedRule,
       });
     }
 
     // Record the pattern analysis result
-    await savePatternCheck(userId, from);
+    await savePatternCheck({ emailAccountId, from });
 
     return NextResponse.json({ success: true });
   } catch (error) {
     logger.error("Error in pattern match API", {
       from,
-      userId,
+      emailAccountId,
       error,
     });
 
@@ -167,12 +174,18 @@ async function process({ userId, from }: { userId: string; from: string }) {
 /**
  * Record that we've analyzed a sender for patterns
  */
-async function savePatternCheck(userId: string, from: string) {
+async function savePatternCheck({
+  emailAccountId,
+  from,
+}: {
+  emailAccountId: string;
+  from: string;
+}) {
   await prisma.newsletter.upsert({
     where: {
-      email_userId: {
+      email_emailAccountId: {
         email: from,
-        userId,
+        emailAccountId,
       },
     },
     update: {
@@ -181,7 +194,7 @@ async function savePatternCheck(userId: string, from: string) {
     },
     create: {
       email: from,
-      userId,
+      emailAccountId,
       patternAnalyzed: true,
       lastAnalyzedAt: new Date(),
     },
@@ -236,77 +249,30 @@ async function getThreadsFromSender(
   return threadsWithMessages;
 }
 
-async function saveLearnedPattern({
-  userId,
-  from,
-  ruleName,
+async function getEmailAccountWithRules({
+  emailAccountId,
 }: {
-  userId: string;
-  from: string;
-  ruleName: string;
+  emailAccountId: string;
 }) {
-  const rule = await prisma.rule.findUnique({
-    where: {
-      name_userId: {
-        name: ruleName,
-        userId,
-      },
-    },
-    select: { id: true, groupId: true },
-  });
-
-  if (!rule) {
-    logger.error("Rule not found", { userId, ruleName });
-    return;
-  }
-
-  let groupId = rule.groupId;
-
-  if (!groupId) {
-    // Create a new group for this rule if one doesn't exist
-    const newGroup = await prisma.group.create({
-      data: {
-        userId,
-        name: ruleName,
-        rule: { connect: { id: rule.id } },
-      },
-    });
-
-    groupId = newGroup.id;
-  }
-
-  await prisma.groupItem.upsert({
-    where: {
-      groupId_type_value: {
-        groupId,
-        type: GroupItemType.FROM,
-        value: from,
-      },
-    },
-    update: {},
-    create: {
-      groupId,
-      type: GroupItemType.FROM,
-      value: from,
-    },
-  });
-}
-
-async function getUserWithRules(userId: string) {
-  return await prisma.user.findUnique({
-    where: { id: userId },
+  return await prisma.emailAccount.findUnique({
+    where: { id: emailAccountId },
     select: {
       id: true,
+      userId: true,
       email: true,
       about: true,
-      aiProvider: true,
-      aiModel: true,
-      aiApiKey: true,
-      accounts: {
-        take: 1,
+      user: {
+        select: {
+          aiProvider: true,
+          aiModel: true,
+          aiApiKey: true,
+        },
+      },
+      account: {
         select: {
           access_token: true,
           refresh_token: true,
+          expires_at: true,
         },
       },
       rules: {

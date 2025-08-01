@@ -1,9 +1,9 @@
 import type { gmail_v1 } from "@googleapis/gmail";
-import { parseMessage } from "@/utils/mail";
 import {
   type BatchError,
   type MessageWithPayload,
   type ParsedMessage,
+  type ThreadWithPayloadMessages,
   isBatchError,
   isDefined,
 } from "@/utils/types";
@@ -12,8 +12,56 @@ import { extractDomainFromEmail } from "@/utils/email";
 import { createScopedLogger } from "@/utils/logger";
 import { sleep } from "@/utils/sleep";
 import { getAccessTokenFromClient } from "@/utils/gmail/client";
+import { GmailLabel } from "@/utils/gmail/label";
+import { isIgnoredSender } from "@/utils/filter-ignored-senders";
+import parse from "gmail-api-parse-message";
+import type { EmailProvider } from "@/utils/email/provider";
 
 const logger = createScopedLogger("gmail/message");
+
+export function parseMessage(
+  message: MessageWithPayload,
+): ParsedMessage & { subject: string; date: string } {
+  const parsed = parse(message) as ParsedMessage;
+  return {
+    ...parsed,
+    subject: parsed.headers?.subject || "",
+    date: parsed.headers?.date || "",
+  };
+}
+
+export function parseMessages(
+  thread: ThreadWithPayloadMessages,
+  {
+    withoutIgnoredSenders,
+    withoutDrafts,
+  }: {
+    withoutIgnoredSenders?: boolean;
+    withoutDrafts?: boolean;
+  } = {},
+) {
+  const messages =
+    thread.messages?.map((message: MessageWithPayload) => {
+      return parseMessage(message);
+    }) || [];
+
+  if (withoutIgnoredSenders || withoutDrafts) {
+    const filteredMessages = messages.filter((message) => {
+      if (
+        withoutIgnoredSenders &&
+        message.headers &&
+        isIgnoredSender(message.headers.from)
+      )
+        return false;
+      if (withoutDrafts && message.labelIds?.includes(GmailLabel.DRAFT))
+        return false;
+      return true;
+    });
+    return filteredMessages;
+  }
+
+  return messages;
+}
 
 export async function getMessage(
   messageId: string,
@@ -54,16 +102,22 @@ export async function getMessageByRfc822Id(
   return getMessage(message.id, gmail);
 }
 
-export async function getMessagesBatch(
-  messageIds: string[],
-  accessToken: string,
+export async function getMessagesBatch({
+  messageIds,
+  accessToken,
   retryCount = 0,
-): Promise<ParsedMessage[]> {
+}: {
+  messageIds: string[];
+  accessToken: string;
+  retryCount?: number;
+}): Promise<ParsedMessage[]> {
+  if (!accessToken) throw new Error("No access token");
+
   if (retryCount > 3) {
     logger.error("Too many retries", { messageIds, retryCount });
     return [];
   }
-  if (messageIds.length > 100) throw new Error("Too many messages. Max 1000");
+  if (messageIds.length > 100) throw new Error("Too many messages. Max 100");
 
   const batch: (MessageWithPayload | BatchError)[] = await getBatch(
     messageIds,
@@ -72,6 +126,11 @@ export async function getMessagesBatch(
   );
 
   const missingMessageIds = new Set<string>();
+
+  if (batch.some((m) => isBatchError(m) && m.error.code === 401)) {
+    logger.error("Error fetching messages", { firstBatchItem: batch?.[0] });
+    throw new Error("Invalid access token");
+  }
 
   const messages = batch
     .map((message, i) => {
@@ -94,12 +153,12 @@ export async function getMessagesBatch(
       missingMessageIds: Array.from(missingMessageIds),
     });
     const nextRetryCount = retryCount + 1;
-    await sleep(1_000 * nextRetryCount);
-    const missingMessages = await getMessagesBatch(
-      Array.from(missingMessageIds),
+    await sleep(1000 * nextRetryCount);
+    const missingMessages = await getMessagesBatch({
+      messageIds: Array.from(missingMessageIds),
       accessToken,
-      nextRetryCount,
-    );
+      retryCount: nextRetryCount,
+    });
     return [...messages, ...missingMessages];
   }
 
@@ -107,42 +166,39 @@ export async function getMessagesBatch(
 }
 
 async function findPreviousEmailsWithSender(
-  gmail: gmail_v1.Gmail,
+  client: EmailProvider,
   options: {
     sender: string;
     dateInSeconds: number;
   },
 ) {
-  // Check for both incoming emails from sender and outgoing emails to sender
+  const beforeDate = new Date(options.dateInSeconds * 1000);
   const [incomingEmails, outgoingEmails] = await Promise.all([
-    // Incoming
-    gmail.users.messages.list({
-      userId: "me",
-      q: `from:${options.sender} before:${options.dateInSeconds}`,
+    client.getMessagesWithPagination({
+      query: `from:${options.sender}`,
       maxResults: 2,
+      before: beforeDate,
     }),
-    // Outgoing
-    gmail.users.messages.list({
-      userId: "me",
-      q: `to:${options.sender} before:${options.dateInSeconds}`,
-      maxResults: 1,
+    client.getMessagesWithPagination({
+      query: `to:${options.sender}`,
+      maxResults: 2,
+      before: beforeDate,
     }),
   ]);
 
-  // Combine both incoming and outgoing messages
   const allMessages = [
-    ...(incomingEmails.data.messages || []),
-    ...(outgoingEmails.data.messages || []),
+    ...(incomingEmails.messages || []),
+    ...(outgoingEmails.messages || []),
   ];
 
   return allMessages;
 }
 
 export async function hasPreviousCommunicationWithSender(
-  gmail: gmail_v1.Gmail,
+  client: EmailProvider,
   options: { from: string; date: Date; messageId: string },
 ) {
-  const previousEmails = await findPreviousEmailsWithSender(gmail, {
+  const previousEmails = await findPreviousEmailsWithSender(client, {
     sender: options.from,
     dateInSeconds: +new Date(options.date) / 1000,
   });
@@ -171,11 +227,11 @@ const PUBLIC_DOMAINS = new Set([
 ]);
 
 export async function hasPreviousCommunicationsWithSenderOrDomain(
-  gmail: gmail_v1.Gmail,
+  client: EmailProvider,
   options: { from: string; date: Date; messageId: string },
 ) {
   const domain = extractDomainFromEmail(options.from);
-  if (!domain) return hasPreviousCommunicationWithSender(gmail, options);
+  if (!domain) return hasPreviousCommunicationWithSender(client, options);
 
   // For public email providers (gmail, yahoo, etc), search by full email address
   // For company domains, search by domain to catch emails from different people at same company
@@ -183,7 +239,7 @@ export async function hasPreviousCommunicationsWithSenderOrDomain(
     ? options.from
     : domain;
 
-  return hasPreviousCommunicationWithSender(gmail, {
+  return hasPreviousCommunicationWithSender(client, {
     ...options,
     from: searchTerm,
   });
@@ -237,7 +293,7 @@ export async function queryBatchMessages(
   if (!messages.messages) return { messages: [], nextPageToken: undefined };
   const messageIds = messages.messages.map((m) => m.id).filter(isDefined);
   return {
-    messages: (await getMessagesBatch(messageIds, accessToken)) || [],
+    messages: (await getMessagesBatch({ messageIds, accessToken })) || [],
     nextPageToken: messages.nextPageToken,
   };
 }

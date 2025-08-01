@@ -1,10 +1,10 @@
 import type { gmail_v1 } from "@googleapis/gmail";
-import { parseMessage } from "@/utils/mail";
+import { parseMessage } from "@/utils/gmail/message";
 import { getMessage, getMessages } from "@/utils/gmail/message";
 import type {
   MessageWithGroupItem,
   RuleWithGroup,
-} from "@/app/(app)/automation/rule/[ruleId]/examples/types";
+} from "@/app/(app)/[emailAccountId]/assistant/rule/[ruleId]/examples/types";
 import { matchesStaticRule } from "@/utils/ai/choose-rule/match-rules";
 import { fetchPaginatedMessages } from "@/app/api/user/group/[groupId]/messages/controller";
 import {
@@ -73,6 +73,7 @@ async function fetchStaticExampleMessages(
 
   const messages = await Promise.all(
     (response.messages || []).map(async (message) => {
+      // TODO: Use email provider to get the message which will parse it internally
       const m = await getMessage(message.id!, gmail);
       const parsedMessage = parseMessage(m);
       return parsedMessage;

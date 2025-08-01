@@ -6,6 +6,13 @@ import {
   SystemType,
 } from "@prisma/client";
 import { ConditionType } from "@/utils/config";
+import { NINETY_DAYS_MINUTES } from "@/utils/date";
+
+export const delayInMinutesSchema = z
+  .number()
+  .min(1, "Minimum supported delay is 1 minute")
+  .max(NINETY_DAYS_MINUTES, "Maximum supported delay is 90 days")
+  .nullish();
 
 const zodActionType = z.enum([
   ActionType.ARCHIVE,
@@ -18,6 +25,7 @@ const zodActionType = z.enum([
   ActionType.CALL_WEBHOOK,
   ActionType.MARK_READ,
   ActionType.TRACK_THREAD,
+  ActionType.DIGEST,
 ]);
 
 const zodConditionType = z.enum([
@@ -72,6 +80,7 @@ const zodAction = z
     cc: zodField,
     bcc: zodField,
     url: zodField,
+    delayInMinutes: delayInMinutesSchema,
   })
   .superRefine((data, ctx) => {
     if (data.type === ActionType.LABEL && !data.label?.value?.trim()) {
@@ -137,6 +146,8 @@ export type CreateRuleBody = z.infer<typeof createRuleBody>;
 export const updateRuleBody = createRuleBody.extend({ id: z.string() });
 export type UpdateRuleBody = z.infer<typeof updateRuleBody>;
 
+export const deleteRuleBody = z.object({ id: z.string() });
+
 export const updateRuleInstructionsBody = z.object({
   id: z.string(),
   instructions: z.string(),
@@ -160,16 +171,27 @@ export type UpdateRuleSettingsBody = z.infer<typeof updateRuleSettingsBody>;
 export const enableDraftRepliesBody = z.object({ enable: z.boolean() });
 export type EnableDraftRepliesBody = z.infer<typeof enableDraftRepliesBody>;
 
-const categoryAction = z.enum(["label", "label_archive", "none"]);
+const categoryAction = z.enum([
+  "label",
+  "label_archive",
+  "label_archive_delayed",
+  "none",
+]);
 export type CategoryAction = z.infer<typeof categoryAction>;
+
+const categoryConfig = z.object({
+  action: categoryAction.optional(),
+  hasDigest: z.boolean().optional(),
+});
+
 export const createRulesOnboardingBody = z.object({
-  toReply: categoryAction,
-  newsletter: categoryAction,
-  marketing: categoryAction,
-  calendar: categoryAction,
-  receipt: categoryAction,
-  notification: categoryAction,
-  coldEmail: categoryAction,
+  toReply: categoryConfig,
+  newsletter: categoryConfig,
+  marketing: categoryConfig,
+  calendar: categoryConfig,
+  receipt: categoryConfig,
+  coldEmail: categoryConfig,
+  notification: categoryConfig,
 });
 export type CreateRulesOnboardingBody = z.infer<
   typeof createRulesOnboardingBody
