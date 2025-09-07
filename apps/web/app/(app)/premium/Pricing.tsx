@@ -85,7 +85,7 @@ export default function Pricing(props: PricingProps) {
   //   tiers: [basicTier, businessTier, enterpriseTier],
   // };
 
-  const Layout = TwoColLayout;
+  const Layout = ThreeColLayout;
 
   const router = useRouter();
 
@@ -108,7 +108,7 @@ export default function Pricing(props: PricingProps) {
 
             {userPremiumTier && (
               <>
-                <Button variant="primaryBlue" className="ml-2" asChild>
+                <Button className="ml-2" asChild>
                   <Link href={env.NEXT_PUBLIC_APP_HOME_PATH}>
                     <SparklesIcon className="mr-2 h-4 w-4" />
                     Go to app
@@ -127,7 +127,7 @@ export default function Pricing(props: PricingProps) {
                     icon={null}
                     button={
                       <div className="ml-4 whitespace-nowrap">
-                        <Button variant="primaryBlue" asChild>
+                        <Button asChild>
                           {/* <Link href="/settings#manage-users">Add users</Link> */}
                           <Link href="/accounts">Add users</Link>
                         </Button>
@@ -164,19 +164,21 @@ export default function Pricing(props: PricingProps) {
           </RadioGroup>
 
           <div className="ml-1">
-            <Badge>Save up to 20%!</Badge>
+            <Badge>Save up to 16%</Badge>
           </div>
         </div>
 
-        <Layout className="isolate mx-auto mt-10 grid max-w-md grid-cols-1 gap-y-8">
-          {tiers.map((tier) => {
+        <Layout className="isolate mx-auto mt-10 grid max-w-7xl grid-cols-1 gap-y-8">
+          {tiers.map((tier, index) => {
             return (
               <PriceTier
                 key={tier.name}
                 tier={tier}
+                index={index}
                 userPremiumTier={userPremiumTier}
                 frequency={frequency}
                 stripeSubscriptionId={premium?.stripeSubscriptionId}
+                stripeSubscriptionStatus={premium?.stripeSubscriptionStatus}
                 isLoggedIn={isLoggedIn}
                 router={router}
               />
@@ -190,16 +192,20 @@ export default function Pricing(props: PricingProps) {
 
 function PriceTier({
   tier,
+  index,
   userPremiumTier,
   frequency,
   stripeSubscriptionId,
+  stripeSubscriptionStatus,
   isLoggedIn,
   router,
 }: {
   tier: Tier;
+  index: number;
   userPremiumTier: PremiumTier | null;
   frequency: (typeof frequencies)[number];
   stripeSubscriptionId: string | null | undefined;
+  stripeSubscriptionStatus: string | null | undefined;
   isLoggedIn: boolean;
   router: ReturnType<typeof useRouter>;
 }) {
@@ -209,13 +215,14 @@ function PriceTier({
 
   function getCTAText() {
     if (isCurrentPlan) return "Current plan";
-    if (userPremiumTier) return "Switch to this plan";
+    if (userPremiumTier && !tier.ctaLink) return "Switch to this plan";
     return tier.cta;
   }
 
   return (
-    <TwoColItem
+    <ThreeColItem
       key={tier.name}
+      index={index}
       className="flex flex-col rounded-3xl bg-white p-8 ring-1 ring-gray-200 xl:p-10"
     >
       <div className="flex-1">
@@ -235,12 +242,20 @@ function PriceTier({
           {tier.description}
         </p>
         <p className="mt-6 flex items-baseline gap-x-1">
-          <span className="text-4xl font-bold tracking-tight text-gray-900">
-            ${tier.price[frequency.value]}
-          </span>
-          <span className="text-sm font-semibold leading-6 text-gray-600">
-            {frequency.priceSuffix}
-          </span>
+          {tier.price[frequency.value] === 0 ? (
+            <span className="text-4xl font-bold tracking-tight text-gray-900">
+              Let's talk
+            </span>
+          ) : (
+            <>
+              <span className="text-4xl font-bold tracking-tight text-gray-900">
+                ${tier.price[frequency.value]}
+              </span>
+              <span className="text-sm font-semibold leading-6 text-gray-600">
+                {frequency.priceSuffix}
+              </span>
+            </>
+          )}
 
           {!!tier.discount?.[frequency.value] && (
             <Badge>
@@ -250,13 +265,13 @@ function PriceTier({
             </Badge>
           )}
         </p>
-        {tier.priceAdditional ? (
+        {tier.priceAdditional && tier.priceAdditional[frequency.value] > 0 ? (
           <p className="mt-3 text-sm leading-6 text-gray-500">
             +${formatPrice(tier.priceAdditional[frequency.value])} for each
             additional email account
           </p>
         ) : (
-          <div className="mt-16" />
+          <div />
         )}
         <ul className="mt-8 space-y-3 text-sm leading-6 text-gray-600">
           {tier.features.map((feature) => (
@@ -280,6 +295,12 @@ function PriceTier({
         type="button"
         disabled={loading}
         onClick={async () => {
+          // Handle enterprise tier differently - redirect to sales page
+          if (tier.ctaLink) {
+            window.location.href = tier.ctaLink;
+            return;
+          }
+
           if (!isLoggedIn) router.push("/login");
 
           setLoading(true);
@@ -292,7 +313,13 @@ function PriceTier({
 
             const upgradeToTier = tier.tiers[frequency.value];
 
-            const result = stripeSubscriptionId
+            // Only use billing portal if subscription is active or trialing
+            const hasActiveStripeSubscription =
+              stripeSubscriptionId &&
+              stripeSubscriptionStatus &&
+              ["active", "trialing"].includes(stripeSubscriptionStatus);
+
+            const result = hasActiveStripeSubscription
               ? await getBillingPortalUrlAction({
                   tier: upgradeToTier,
                 })
@@ -336,7 +363,7 @@ function PriceTier({
           getCTAText()
         )}
       </button>
-    </TwoColItem>
+    </ThreeColItem>
   );
 }
 
@@ -396,21 +423,7 @@ function PriceTier({
 //   };
 // }
 
-// function ThreeColLayout({
-//   children,
-//   className,
-// }: {
-//   children: React.ReactNode;
-//   className?: string;
-// }) {
-//   return (
-//     <div className={cn("lg:mx-0 lg:max-w-none lg:grid-cols-3", className)}>
-//       {children}
-//     </div>
-//   );
-// }
-
-function TwoColLayout({
+function ThreeColLayout({
   children,
   className,
 }: {
@@ -418,44 +431,30 @@ function TwoColLayout({
   className?: string;
 }) {
   return (
-    <div className={cn("gap-x-4 lg:max-w-4xl lg:grid-cols-2", className)}>
+    <div className={cn("lg:mx-0 lg:max-w-none lg:grid-cols-3", className)}>
       {children}
     </div>
   );
 }
 
-// function ThreeColItem({
-//   children,
-//   className,
-//   index,
-// }: {
-//   children: React.ReactNode;
-//   className?: string;
-//   index: number;
-// }) {
-//   return (
-//     <div
-//       className={cn(
-//         index === 1 ? "lg:z-10 lg:rounded-b-none" : "lg:mt-8", // middle tier
-//         index === 0 ? "lg:rounded-r-none" : "",
-//         index === 2 ? "lg:rounded-l-none" : "",
-//         className,
-//       )}
-//     >
-//       {children}
-//     </div>
-//   );
-// }
-
-function TwoColItem({
+function ThreeColItem({
   children,
   className,
+  index,
 }: {
   children: React.ReactNode;
   className?: string;
+  index: number;
 }) {
   return (
-    <div className={cn("flex flex-col justify-between", className)}>
+    <div
+      className={cn(
+        index === 1 ? "lg:z-10 lg:rounded-b-none" : "lg:mt-8", // middle tier
+        index === 0 ? "lg:rounded-r-none" : "",
+        index === 2 ? "lg:rounded-l-none" : "",
+        className,
+      )}
+    >
       {children}
     </div>
   );

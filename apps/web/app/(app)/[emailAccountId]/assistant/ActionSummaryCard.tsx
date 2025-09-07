@@ -7,20 +7,30 @@ import {
   ACTION_TYPE_ICONS,
 } from "@/app/(app)/[emailAccountId]/assistant/constants";
 import { TooltipExplanation } from "@/components/TooltipExplanation";
-import {
-  AWAITING_REPLY_LABEL_NAME,
-  NEEDS_REPLY_LABEL_NAME,
-} from "@/utils/reply-tracker/consts";
+import { getEmailTerminology } from "@/utils/terminology";
 
 export function ActionSummaryCard({
   action,
   typeOptions,
+  provider,
 }: {
   action: CreateRuleBody["actions"][number];
   typeOptions: { label: string; value: ActionType }[];
+  provider: string;
 }) {
+  // don't display
+  if (
+    action.type === ActionType.TRACK_THREAD ||
+    action.type === ActionType.DIGEST
+  ) {
+    return null;
+  }
+
+  const terminology = getEmailTerminology(provider);
   const actionTypeLabel =
     typeOptions.find((opt) => opt.value === action.type)?.label || action.type;
+
+  const delaySuffix = formatDelay(action.delayInMinutes);
 
   let summaryContent: React.ReactNode = actionTypeLabel;
   let tooltipText: string | undefined;
@@ -29,9 +39,11 @@ export function ActionSummaryCard({
     case ActionType.LABEL: {
       const labelValue = action.label?.value || "";
       if (action.label?.ai) {
-        summaryContent = labelValue ? `AI Label: ${labelValue}` : "AI Label";
+        summaryContent = labelValue
+          ? `AI ${terminology.label.action}: ${labelValue}`
+          : `AI ${terminology.label.action}`;
       } else {
-        summaryContent = `Label as "${labelValue || "unset"}"`;
+        summaryContent = `${terminology.label.action} as "${labelValue || "unset"}"`;
       }
       break;
     }
@@ -167,11 +179,8 @@ export function ActionSummaryCard({
 
     case ActionType.CALL_WEBHOOK:
       summaryContent = `Call webhook: ${action.url?.value || "unset"}`;
-      break;
-
-    case ActionType.TRACK_THREAD:
-      summaryContent = "Auto-update reply label";
-      tooltipText = `Our AI will automatically update the thread label to '${NEEDS_REPLY_LABEL_NAME}' or '${AWAITING_REPLY_LABEL_NAME}' based on whether you need to respond or are awaiting a response from the recipient.`;
+      tooltipText =
+        "Sends email details and rule execution data to your webhook endpoint when this rule is triggered.";
       break;
 
     case ActionType.ARCHIVE:
@@ -186,8 +195,8 @@ export function ActionSummaryCard({
       summaryContent = "Mark as spam";
       break;
 
-    case ActionType.DIGEST:
-      summaryContent = "Add to digest";
+    case ActionType.MOVE_FOLDER:
+      summaryContent = `Folder: ${action.folderName?.value || "unset"}`;
       break;
 
     default:
@@ -202,14 +211,18 @@ export function ActionSummaryCard({
     <CardBasic className="flex items-center justify-between p-4">
       <div className="flex items-center gap-3">
         <Icon className={`size-5 ${textColorClass}`} />
-        <div className="whitespace-pre-wrap">{summaryContent}</div>
+        <div className="whitespace-pre-wrap">
+          {summaryContent}
+          {delaySuffix && (
+            <span className="text-muted-foreground">{delaySuffix}</span>
+          )}
+        </div>
         {tooltipText && <TooltipExplanation size="md" text={tooltipText} />}
       </div>
     </CardBasic>
   );
 }
 
-// Helper component for CC/BCC fields
 function EmailField({
   label,
   value,
@@ -227,7 +240,6 @@ function EmailField({
   );
 }
 
-// Helper component for optional email fields (cc, bcc)
 function OptionalEmailFields({
   cc,
   bcc,
@@ -243,4 +255,18 @@ function OptionalEmailFields({
       {bcc && <EmailField label="bcc" value={bcc} />}
     </div>
   );
+}
+
+function formatDelay(delayInMinutes: number | null | undefined): string {
+  if (!delayInMinutes) return "";
+
+  if (delayInMinutes < 60) {
+    return ` after ${delayInMinutes} minute${delayInMinutes === 1 ? "" : "s"}`;
+  } else if (delayInMinutes < 1440) {
+    const hours = Math.floor(delayInMinutes / 60);
+    return ` after ${hours} hour${hours === 1 ? "" : "s"}`;
+  } else {
+    const days = Math.floor(delayInMinutes / 1440);
+    return ` after ${days} day${days === 1 ? "" : "s"}`;
+  }
 }

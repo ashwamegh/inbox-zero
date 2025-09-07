@@ -1,4 +1,8 @@
 import { SCOPES } from "@/utils/gmail/scopes";
+import {
+  getAccessTokenFromClient,
+  getGmailClientWithRefresh,
+} from "@/utils/gmail/client";
 import { createScopedLogger } from "@/utils/logger";
 import prisma from "@/utils/prisma";
 
@@ -70,37 +74,90 @@ async function checkGmailPermissions({
 
 export async function handleGmailPermissionsCheck({
   accessToken,
+  refreshToken,
   emailAccountId,
 }: {
   accessToken: string;
+  refreshToken: string | null | undefined;
   emailAccountId: string;
 }) {
-  const { hasAllPermissions, error, missingScopes } =
-    await checkGmailPermissions({ accessToken, emailAccountId });
+  const permissionsBeforeRefresh = await checkGmailPermissions({
+    accessToken,
+    emailAccountId,
+  });
 
-  if (error === "invalid_token") {
-    logger.info("Cleaning up invalid Gmail tokens", { emailAccountId });
-    // Clean up invalid tokens
-    const emailAccount = await prisma.emailAccount.findUnique({
-      where: { id: emailAccountId },
-    });
-    if (!emailAccount)
-      return { hasAllPermissions: false, error: "Email account not found" };
+  if (
+    permissionsBeforeRefresh.error &&
+    [
+      "invalid_token",
+      "invalid_grant",
+      "invalid_scope",
+      "access_denied",
+    ].includes(permissionsBeforeRefresh.error)
+  ) {
+    // attempt to refresh the token one last time using only the refresh token
+    if (refreshToken) {
+      try {
+        const gmailClient = await getGmailClientWithRefresh({
+          accessToken: null,
+          refreshToken,
+          // force refresh even if existing expiry suggests it's valid
+          expiresAt: null,
+          emailAccountId,
+        });
 
-    await prisma.account.update({
-      where: { id: emailAccount.accountId },
-      data: {
-        access_token: null,
-        refresh_token: null,
-        expires_at: null,
-      },
-    });
-    return {
-      hasAllPermissions: false,
-      error: "Gmail access expired. Please reconnect your account.",
-      missingScopes,
-    };
+        // re-check permissions with the new access token
+        const accessToken = getAccessTokenFromClient(gmailClient);
+        const permissionsAfterRefresh = await checkGmailPermissions({
+          accessToken,
+          emailAccountId,
+        });
+
+        if (
+          permissionsAfterRefresh.error &&
+          permissionsAfterRefresh.error === "invalid_grant"
+        ) {
+          logger.info("Cleaning up invalid Gmail tokens", { emailAccountId });
+          const emailAccount = await prisma.emailAccount.findUnique({
+            where: { id: emailAccountId },
+            select: { accountId: true },
+          });
+          if (!emailAccount)
+            return {
+              hasAllPermissions: false,
+              error: "Email account not found",
+            };
+
+          await prisma.account.update({
+            where: { id: emailAccount.accountId },
+            data: {
+              access_token: null,
+              refresh_token: null,
+              expires_at: null,
+            },
+          });
+
+          return {
+            hasAllPermissions: false,
+            error: "Gmail access expired. Please reconnect your account.",
+            missingScopes: permissionsBeforeRefresh.missingScopes,
+          };
+        }
+
+        return permissionsAfterRefresh;
+      } catch (_) {
+        return {
+          hasAllPermissions: false,
+          error: "Gmail access expired. Please reconnect your account.",
+          missingScopes: permissionsBeforeRefresh.missingScopes,
+        };
+      }
+    } else {
+      logger.warn("Got no refresh token to attempt refresh", {
+        emailAccountId,
+      });
+    }
   }
 
-  return { hasAllPermissions, error, missingScopes };
+  return permissionsBeforeRefresh;
 }

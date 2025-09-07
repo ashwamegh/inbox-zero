@@ -1,7 +1,7 @@
 import type { gmail_v1 } from "@googleapis/gmail";
 import { publishArchive, type TinybirdEmailAction } from "@inboxzero/tinybird";
 import {
-  getRandomLabelColor,
+  getLabelColor,
   inboxZeroLabels,
   PARENT_LABEL,
   type InboxZeroLabel,
@@ -14,6 +14,10 @@ import {
 } from "@/utils/gmail/constants";
 import { createScopedLogger } from "@/utils/logger";
 import { withGmailRetry } from "@/utils/gmail/retry";
+import {
+  AWAITING_REPLY_LABEL_NAME,
+  NEEDS_REPLY_LABEL_NAME,
+} from "@/utils/reply-tracker/consts";
 
 const logger = createScopedLogger("gmail/label");
 
@@ -204,9 +208,10 @@ export async function createLabel({
         name,
         messageListVisibility,
         labelListVisibility,
-        color: color
-          ? { backgroundColor: color, textColor: "#000000" }
-          : { backgroundColor: getRandomLabelColor(), textColor: "#000000" },
+        color: {
+          backgroundColor: color || getLabelColor(name),
+          textColor: "#000000",
+        },
       },
     });
     return createdLabel.data;
@@ -353,4 +358,24 @@ export async function getOrCreateInboxZeroLabel({
     color,
   });
   return createdLabel;
+}
+
+export async function getAwaitingReplyLabel(
+  gmail: gmail_v1.Gmail,
+): Promise<string | null> {
+  const [awaitingReplyLabel] = await getOrCreateLabels({
+    gmail,
+    names: [AWAITING_REPLY_LABEL_NAME],
+  });
+  return awaitingReplyLabel.id || "";
+}
+
+export async function getNeedsReplyLabel(
+  gmail: gmail_v1.Gmail,
+): Promise<string | null> {
+  const [toReplyLabel] = await getOrCreateLabels({
+    gmail,
+    names: [NEEDS_REPLY_LABEL_NAME],
+  });
+  return toReplyLabel.id || "";
 }

@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
-import { getOutlookClientWithRefresh } from "@/utils/outlook/client";
 import prisma from "@/utils/prisma";
-import { watchEmails } from "@/app/api/outlook/watch/controller";
 import { hasCronSecret, hasPostCronSecret } from "@/utils/cron";
 import { withError } from "@/utils/middleware";
 import { captureException } from "@/utils/error";
 import { hasAiAccess } from "@/utils/premium";
 import { createScopedLogger } from "@/utils/logger";
+import { createManagedOutlookSubscription } from "@/utils/outlook/subscription-manager";
 
 const logger = createScopedLogger("api/outlook/watch/all");
 
@@ -17,7 +16,7 @@ async function watchAllEmails() {
   const emailAccounts = await prisma.emailAccount.findMany({
     where: {
       account: {
-        provider: "microsoft-entra-id",
+        provider: "microsoft",
       },
       user: {
         premium: {
@@ -95,17 +94,7 @@ async function watchAllEmails() {
         continue;
       }
 
-      const outlookClient = await getOutlookClientWithRefresh({
-        accessToken: emailAccount.account.access_token,
-        refreshToken: emailAccount.account.refresh_token,
-        expiresAt: emailAccount.account.expires_at,
-        emailAccountId: emailAccount.id,
-      });
-
-      await watchEmails({
-        emailAccountId: emailAccount.id,
-        client: outlookClient.getClient(),
-      });
+      await createManagedOutlookSubscription(emailAccount.id);
     } catch (error) {
       if (error instanceof Error) {
         const warn = [

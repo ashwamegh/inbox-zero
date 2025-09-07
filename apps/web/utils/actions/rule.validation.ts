@@ -7,6 +7,7 @@ import {
 } from "@prisma/client";
 import { ConditionType } from "@/utils/config";
 import { NINETY_DAYS_MINUTES } from "@/utils/date";
+import { SystemRule } from "@/utils/rule/consts";
 
 export const delayInMinutesSchema = z
   .number()
@@ -26,6 +27,7 @@ const zodActionType = z.enum([
   ActionType.MARK_READ,
   ActionType.TRACK_THREAD,
   ActionType.DIGEST,
+  ActionType.MOVE_FOLDER,
 ]);
 
 const zodConditionType = z.enum([
@@ -80,6 +82,8 @@ const zodAction = z
     cc: zodField,
     bcc: zodField,
     url: zodField,
+    folderName: zodField,
+    folderId: zodField,
     delayInMinutes: delayInMinutesSchema,
   })
   .superRefine((data, ctx) => {
@@ -104,6 +108,16 @@ const zodAction = z
         path: ["url"],
       });
     }
+    if (
+      data.type === ActionType.MOVE_FOLDER &&
+      (!data.folderName?.value?.trim() || !data.folderId?.value?.trim())
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Please select a folder from the list",
+        path: ["folderName"],
+      });
+    }
   });
 
 export const createRuleBody = z.object({
@@ -113,6 +127,7 @@ export const createRuleBody = z.object({
   groupId: z.string().nullish(),
   automate: z.boolean().nullish(),
   runOnThreads: z.boolean().nullish(),
+  digest: z.boolean().nullish(),
   actions: z.array(zodAction).min(1, "You must have at least one action"),
   conditions: z
     .array(zodCondition)
@@ -159,6 +174,9 @@ export type UpdateRuleInstructionsBody = z.infer<
 export const saveRulesPromptBody = z.object({ rulesPrompt: z.string().trim() });
 export type SaveRulesPromptBody = z.infer<typeof saveRulesPromptBody>;
 
+export const createRulesBody = z.object({ prompt: z.string().trim() });
+export type CreateRulesBody = z.infer<typeof createRulesBody>;
+
 export const rulesExamplesBody = z.object({ rulesPrompt: z.string() });
 export type RulesExamplesBody = z.infer<typeof rulesExamplesBody>;
 
@@ -175,24 +193,26 @@ const categoryAction = z.enum([
   "label",
   "label_archive",
   "label_archive_delayed",
+  "move_folder",
+  "move_folder_delayed",
   "none",
 ]);
 export type CategoryAction = z.infer<typeof categoryAction>;
 
 const categoryConfig = z.object({
-  action: categoryAction.optional(),
-  hasDigest: z.boolean().optional(),
+  action: categoryAction.nullish(),
+  hasDigest: z.boolean().nullish(),
+  name: z
+    .string()
+    .trim()
+    .min(1, "Please enter a name")
+    .max(40, "Please keep names under 40 characters"),
+  description: z.string(),
+  key: z.nativeEnum(SystemRule).nullable(),
 });
+export type CategoryConfig = z.infer<typeof categoryConfig>;
 
-export const createRulesOnboardingBody = z.object({
-  toReply: categoryConfig,
-  newsletter: categoryConfig,
-  marketing: categoryConfig,
-  calendar: categoryConfig,
-  receipt: categoryConfig,
-  coldEmail: categoryConfig,
-  notification: categoryConfig,
-});
+export const createRulesOnboardingBody = z.array(categoryConfig);
 export type CreateRulesOnboardingBody = z.infer<
   typeof createRulesOnboardingBody
 >;

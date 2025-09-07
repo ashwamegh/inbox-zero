@@ -15,9 +15,9 @@ import type { ParsedMessage } from "@/utils/types";
 import { ViewEmailButton } from "@/components/ViewEmailButton";
 import { ExecutedRuleStatus } from "@prisma/client";
 import { FixWithChat } from "@/app/(app)/[emailAccountId]/assistant/FixWithChat";
-import type { SetInputFunction } from "@/components/assistant-chat/types";
 import { useAssistantNavigation } from "@/hooks/useAssistantNavigation";
 import { useAccount } from "@/providers/EmailAccountProvider";
+import { isGoogleProvider } from "@/utils/email/provider-types";
 
 export function EmailCell({
   from,
@@ -74,7 +74,7 @@ export function RuleCell({
   status: ExecutedRuleStatus;
   reason?: string | null;
   message: ParsedMessage;
-  setInput: SetInputFunction;
+  setInput: (input: string) => void;
 }) {
   const { createAssistantUrl } = useAssistantNavigation(emailAccountId);
 
@@ -149,13 +149,15 @@ export function RuleCell({
 
 export function ActionItemsCell({
   actionItems,
+  provider,
 }: {
   actionItems: PendingExecutedRules["executedRules"][number]["actionItems"];
+  provider: string;
 }) {
   return (
     <div className="mt-2 flex flex-wrap gap-1">
       {actionItems.map((item) => (
-        <ActionBadgeExpanded key={item.id} action={item} />
+        <ActionBadgeExpanded key={item.id} action={item} provider={provider} />
       ))}
     </div>
   );
@@ -181,6 +183,10 @@ function OpenInGmailButton({
   userEmail: string;
 }) {
   const { provider } = useAccount();
+
+  if (!isGoogleProvider(provider)) {
+    return null;
+  }
 
   return (
     <Link

@@ -16,7 +16,7 @@ const PROVIDER_CONFIG: Record<
     selectId: (messageId: string, threadId: string) => string;
   }
 > = {
-  "microsoft-entra-id": {
+  microsoft: {
     buildUrl: (messageOrThreadId: string, _emailAddress?: string | null) => {
       // Outlook URL format: https://outlook.live.com/mail/0/inbox/id/ENCODED_MESSAGE_ID
       // The message ID needs to be URL-encoded for Outlook
@@ -64,7 +64,7 @@ export function getEmailUrlForMessage(
   provider?: string,
 ) {
   const config = getProviderConfig(provider);
-  const idToUse = config.selectId(messageId, threadId);
+  const idToUse = config?.selectId(messageId, threadId);
 
   return getEmailUrl(idToUse, emailAddress, provider);
 }

@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { chatCompletionObject } from "@/utils/llms";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
 import type { ColdEmail } from "@prisma/client";
 import {
@@ -12,7 +11,11 @@ import { DEFAULT_COLD_EMAIL_PROMPT } from "@/utils/cold-email/prompt";
 import { stringifyEmail } from "@/utils/stringify-email";
 import { createScopedLogger } from "@/utils/logger";
 import type { EmailForLLM } from "@/utils/types";
-import type { EmailProvider } from "@/utils/email/provider";
+import type { EmailProvider } from "@/utils/email/types";
+import { getModel, type ModelType } from "@/utils/llms/model";
+import { createGenerateObject } from "@/utils/llms";
+import { getOrCreateOutlookFolderIdByName } from "@/utils/outlook/folders";
+import { getOutlookClientForEmail } from "@/utils/account";
 
 const logger = createScopedLogger("ai-cold-email");
 
@@ -22,10 +25,12 @@ export async function isColdEmail({
   email,
   emailAccount,
   provider,
+  modelType,
 }: {
   email: EmailForLLM & { threadId?: string };
   emailAccount: Pick<EmailAccount, "coldEmailPrompt"> & EmailAccountWithAI;
   provider: EmailProvider;
+  modelType?: ModelType;
 }): Promise<{
   isColdEmail: boolean;
   reason: ColdEmailBlockerReason;
@@ -68,72 +73,7 @@ export async function isColdEmail({
   }
 
   // otherwise run through ai to see if it's a cold email
-  const res = await aiIsColdEmail(email, emailAccount);
-
-  logger.info("AI is cold email?", {
-    ...loggerOptions,
-    coldEmail: res.coldEmail,
-  });
-
-  return {
-    isColdEmail: !!res.coldEmail,
-    reason: "ai",
-    aiReason: res.reason,
-  };
-}
-
-// New function that works with EmailProvider
-export async function isColdEmailWithProvider({
-  email,
-  emailAccount,
-  provider,
-}: {
-  email: EmailForLLM & { threadId?: string };
-  emailAccount: Pick<EmailAccount, "coldEmailPrompt"> & EmailAccountWithAI;
-  provider: EmailProvider;
-}): Promise<{
-  isColdEmail: boolean;
-  reason: ColdEmailBlockerReason;
-  aiReason?: string | null;
-}> {
-  const loggerOptions = {
-    email: emailAccount.email,
-    threadId: email.threadId,
-    messageId: email.id,
-  };
-
-  logger.info("Checking is cold email", loggerOptions);
-
-  // Check if we marked it as a cold email already
-  const isColdEmailer = await isKnownColdEmailSender({
-    from: email.from,
-    emailAccountId: emailAccount.id,
-  });
-
-  if (isColdEmailer) {
-    logger.info("Known cold email sender", {
-      ...loggerOptions,
-      from: email.from,
-    });
-    return { isColdEmail: true, reason: "ai-already-labeled" };
-  }
-
-  const hasPreviousEmail =
-    email.date && email.id
-      ? await provider.hasPreviousCommunicationsWithSenderOrDomain({
-          from: email.from,
-          date: email.date,
-          messageId: email.id,
-        })
-      : false;
-
-  if (hasPreviousEmail) {
-    logger.info("Has previous email", loggerOptions);
-    return { isColdEmail: false, reason: "hasPreviousEmail" };
-  }
-
-  // otherwise run through ai to see if it's a cold email
-  const res = await aiIsColdEmail(email, emailAccount);
+  const res = await aiIsColdEmail(email, emailAccount, modelType);
 
   logger.info("AI is cold email?", {
     ...loggerOptions,
@@ -170,6 +110,7 @@ async function isKnownColdEmailSender({
 async function aiIsColdEmail(
   email: EmailForLLM,
   emailAccount: Pick<EmailAccount, "coldEmailPrompt"> & EmailAccountWithAI,
+  modelType?: ModelType,
 ) {
   const system = `You are an assistant that decides if an email is a cold email or not.
 
@@ -196,45 +137,49 @@ Determine if the email is a cold email or not.`;
 ${stringifyEmail(email, 500)}
 </email>`;
 
-  logger.trace("AI is cold email prompt", { system, prompt });
+  const modelOptions = getModel(emailAccount.user, modelType);
 
-  const response = await chatCompletionObject({
-    userAi: emailAccount.user,
+  const generateObject = createGenerateObject({
+    userEmail: emailAccount.email,
+    label: "Cold email check",
+    modelOptions,
+  });
+
+  const response = await generateObject({
+    ...modelOptions,
     system,
     prompt,
     schema: z.object({
       coldEmail: z.boolean(),
       reason: z.string(),
     }),
-    userEmail: emailAccount.email,
-    usageLabel: "Cold email check",
   });
-
-  logger.trace("AI is cold email response", { response: response.object });
 
   return response.object;
 }
 
-export async function runColdEmailBlockerWithProvider(options: {
+export async function runColdEmailBlocker(options: {
   email: EmailForLLM & { threadId: string };
   provider: EmailProvider;
   emailAccount: Pick<EmailAccount, "coldEmailPrompt" | "coldEmailBlocker"> &
     EmailAccountWithAI;
+  modelType: ModelType;
 }): Promise<{
   isColdEmail: boolean;
   reason: ColdEmailBlockerReason;
   aiReason?: string | null;
   coldEmailId?: string | null;
 }> {
-  const response = await isColdEmailWithProvider({
+  const response = await isColdEmail({
     email: options.email,
     emailAccount: options.emailAccount,
     provider: options.provider,
+    modelType: options.modelType,
   });
 
   if (!response.isColdEmail) return { ...response, coldEmailId: null };
 
-  const coldEmail = await blockColdEmailWithProvider({
+  const coldEmail = await blockColdEmail({
     ...options,
     aiReason: response.aiReason ?? null,
   });
@@ -242,7 +187,7 @@ export async function runColdEmailBlockerWithProvider(options: {
 }
 
 // New function that works with EmailProvider
-export async function blockColdEmailWithProvider(options: {
+export async function blockColdEmail(options: {
   provider: EmailProvider;
   email: { from: string; id: string; threadId: string };
   emailAccount: Pick<EmailAccount, "coldEmailBlocker"> & EmailAccountWithAI;
@@ -297,7 +242,23 @@ export async function blockColdEmailWithProvider(options: {
 
     // For archiving and marking as read, we'll need to implement these in the provider
     if (shouldArchive) {
-      await provider.archiveThread(email.threadId, emailAccount.email);
+      if (provider.name === "microsoft") {
+        const outlook = await getOutlookClientForEmail({
+          emailAccountId: emailAccount.id,
+        });
+        // TODO: move "Cold Emails"toa const or allow the user to set the folder
+        const folderId = await getOrCreateOutlookFolderIdByName(
+          outlook,
+          "Cold Emails",
+        );
+        await provider.moveThreadToFolder(
+          email.threadId,
+          emailAccount.email,
+          folderId,
+        );
+      } else {
+        await provider.archiveThread(email.threadId, emailAccount.email);
+      }
     }
 
     if (shouldMarkRead) {

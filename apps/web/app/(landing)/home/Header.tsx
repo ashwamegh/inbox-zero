@@ -26,14 +26,14 @@ import {
   NavigationMenuTrigger,
   navigationMenuTriggerStyle,
 } from "@/components/ui/navigation-menu";
+import { EXTENSION_URL } from "@/utils/config";
 
 const navigation = [
   { name: "Enterprise", href: "/enterprise" },
   { name: "Open Source", href: "/github", target: "_blank" as const },
-  { name: "Affiliates", href: "/affiliates", target: "_blank" as const },
   {
     name: "Extension",
-    href: "https://go.getinboxzero.com/extension",
+    href: EXTENSION_URL,
     target: "_blank" as const,
   },
   { name: "Pricing", href: "/#pricing" },

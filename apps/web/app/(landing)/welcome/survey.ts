@@ -1,4 +1,6 @@
 // copy pasted from PostHog
+import { USER_ROLES } from "@/utils/constants/user-roles";
+
 export const survey = {
   questions: [
     {
@@ -11,31 +13,13 @@ export const survey = {
         "Cold Email Blocker",
         "Reply/Follow-up Tracker",
         "Email Analytics",
-        "Other",
       ],
     },
     {
       key: "role",
       type: "single_choice",
       question: "Which role best describes you?",
-      choices: [
-        "Founder",
-        "Executive",
-        "Small Business Owner",
-        "Software Engineer",
-        "Assistant",
-        "Investor",
-        "Sales",
-        "Marketing",
-        "Customer Support",
-        "Realtor",
-        "Content Creator",
-        "Consultant",
-        "E-commerce",
-        "Student",
-        "Individual",
-        "Other",
-      ],
+      choices: USER_ROLES.map((role) => role.value),
       skippable: true,
     },
     {
@@ -68,9 +52,10 @@ export const survey = {
         "Search",
         "Friend",
         "Twitter",
-        "Facebook",
+        "GitHub",
         "YouTube",
         "Reddit",
+        "Facebook",
         "Newsletter",
         "Product Hunt",
         "HackerNews",

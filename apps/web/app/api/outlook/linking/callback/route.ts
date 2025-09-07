@@ -32,7 +32,7 @@ export const GET = withError(async (request: NextRequest) => {
     return NextResponse.redirect(redirectUrl, { headers: response.headers });
   }
 
-  let decodedState: { userId: string; nonce: string };
+  let decodedState: { userId: string; action: string; nonce: string };
   try {
     decodedState = JSON.parse(
       Buffer.from(storedState, "base64url").toString("utf8"),
@@ -46,7 +46,7 @@ export const GET = withError(async (request: NextRequest) => {
 
   response.cookies.delete(OUTLOOK_LINKING_STATE_COOKIE_NAME);
 
-  const { userId: targetUserId } = decodedState;
+  const { userId: targetUserId, action } = decodedState;
 
   if (!code) {
     logger.warn("Missing code in Outlook linking callback");
@@ -93,18 +93,17 @@ export const GET = withError(async (request: NextRequest) => {
     }
 
     const profile = await profileResponse.json();
-    const providerAccountId = profile.id;
     const providerEmail = profile.mail || profile.userPrincipalName;
 
-    if (!providerAccountId || !providerEmail) {
-      throw new Error("Profile missing required id or email");
+    if (!providerEmail) {
+      throw new Error("Profile missing required email");
     }
 
-    const existingAccount = await prisma.account.findUnique({
+    const existingAccount = await prisma.account.findFirst({
       where: {
-        provider_providerAccountId: {
-          provider: "microsoft-entra-id",
-          providerAccountId,
+        provider: "microsoft",
+        user: {
+          email: providerEmail.trim().toLowerCase(),
         },
       },
       select: {
@@ -115,16 +114,99 @@ export const GET = withError(async (request: NextRequest) => {
     });
 
     if (!existingAccount) {
-      logger.warn(
-        `Merge Failed: Microsoft account ${providerEmail} (${providerAccountId}) not found in the system. Cannot merge.`,
-      );
-      redirectUrl.searchParams.set("error", "account_not_found_for_merge");
-      return NextResponse.redirect(redirectUrl, { headers: response.headers });
+      if (action === "merge") {
+        logger.warn(
+          "Merge Failed: Microsoft account not found in the system. Cannot merge.",
+          { email: providerEmail },
+        );
+        redirectUrl.searchParams.set("error", "account_not_found_for_merge");
+        return NextResponse.redirect(redirectUrl, {
+          headers: response.headers,
+        });
+      } else {
+        logger.info(
+          "Creating new Microsoft account and linking to current user",
+          {
+            email: providerEmail,
+            targetUserId,
+          },
+        );
+
+        let expiresAt: Date | null = null;
+        if (tokens.expires_at) {
+          expiresAt = new Date(tokens.expires_at * 1000);
+        } else if (tokens.expires_in) {
+          const expiresInSeconds =
+            typeof tokens.expires_in === "string"
+              ? Number.parseInt(tokens.expires_in, 10)
+              : tokens.expires_in;
+          expiresAt = new Date(Date.now() + expiresInSeconds * 1000);
+        }
+
+        const newAccount = await prisma.account.create({
+          data: {
+            userId: targetUserId,
+            type: "oidc",
+            provider: "microsoft",
+            providerAccountId: profile.id || providerEmail,
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            expires_at: expiresAt,
+            scope: tokens.scope,
+            token_type: tokens.token_type,
+          },
+        });
+
+        let profileImage = null;
+        try {
+          const photoResponse = await fetch(
+            "https://graph.microsoft.com/v1.0/me/photo/$value",
+            {
+              headers: {
+                Authorization: `Bearer ${tokens.access_token}`,
+              },
+            },
+          );
+
+          if (photoResponse.ok) {
+            const photoBuffer = await photoResponse.arrayBuffer();
+            const photoBase64 = Buffer.from(photoBuffer).toString("base64");
+            profileImage = `data:image/jpeg;base64,${photoBase64}`;
+          }
+        } catch (error) {
+          logger.warn("Failed to fetch profile picture", { error });
+        }
+
+        await prisma.emailAccount.create({
+          data: {
+            email: providerEmail,
+            userId: targetUserId,
+            accountId: newAccount.id,
+            name:
+              profile.displayName ||
+              profile.givenName ||
+              profile.surname ||
+              providerEmail,
+            image: profileImage,
+          },
+        });
+
+        logger.info("Successfully created and linked new Microsoft account", {
+          email: providerEmail,
+          targetUserId,
+          accountId: newAccount.id,
+        });
+        redirectUrl.searchParams.set("success", "account_created_and_linked");
+        return NextResponse.redirect(redirectUrl, {
+          headers: response.headers,
+        });
+      }
     }
 
     if (existingAccount.userId === targetUserId) {
       logger.warn(
-        `Microsoft account ${providerEmail} (${providerAccountId}) is already linked to the correct user ${targetUserId}. Merge action unnecessary.`,
+        "Microsoft account is already linked to the correct user. Merge action unnecessary.",
+        { email: providerEmail, targetUserId },
       );
       redirectUrl.searchParams.set("error", "already_linked_to_self");
       return NextResponse.redirect(redirectUrl, {
@@ -132,9 +214,10 @@ export const GET = withError(async (request: NextRequest) => {
       });
     }
 
-    logger.info(
-      `Merging Microsoft account ${providerEmail} (${providerAccountId}) linked to user ${existingAccount.userId}, merging into ${targetUserId}.`,
-    );
+    logger.info("Merging Microsoft account linked to user.", {
+      email: providerEmail,
+      targetUserId,
+    });
     await prisma.$transaction([
       prisma.account.update({
         where: { id: existingAccount.id },
@@ -153,9 +236,11 @@ export const GET = withError(async (request: NextRequest) => {
       }),
     ]);
 
-    logger.info(
-      `Account ${providerAccountId} re-assigned to user ${targetUserId}. Original user was ${existingAccount.userId}`,
-    );
+    logger.info("Account re-assigned to user.", {
+      email: providerEmail,
+      targetUserId,
+      sourceUserId: existingAccount.userId,
+    });
     redirectUrl.searchParams.set("success", "account_merged");
     return NextResponse.redirect(redirectUrl, {
       headers: response.headers,

@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { signIn } from "next-auth/react";
 import Image from "next/image";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { useState } from "react";
 import { Button } from "@/components/Button";
+import { Button as UIButton } from "@/components/ui/button";
 import { SectionDescription } from "@/components/Typography";
 import {
   Dialog,
@@ -13,6 +14,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { signIn } from "@/utils/auth-client";
+import { WELCOME_PATH } from "@/utils/config";
 
 export function LoginForm() {
   const searchParams = useSearchParams();
@@ -21,6 +24,28 @@ export function LoginForm() {
 
   const [loadingGoogle, setLoadingGoogle] = useState(false);
   const [loadingMicrosoft, setLoadingMicrosoft] = useState(false);
+
+  const handleGoogleSignIn = async () => {
+    setLoadingGoogle(true);
+    await signIn.social({
+      provider: "google",
+      errorCallbackURL: "/login/error",
+      callbackURL: next && next.length > 0 ? next : WELCOME_PATH,
+      ...(error === "RequiresReconsent" ? { consent: true } : {}),
+    });
+    setLoadingGoogle(false);
+  };
+
+  const handleMicrosoftSignIn = async () => {
+    setLoadingMicrosoft(true);
+    await signIn.social({
+      provider: "microsoft",
+      errorCallbackURL: "/login/error",
+      callbackURL: next && next.length > 0 ? next : WELCOME_PATH,
+      ...(error === "RequiresReconsent" ? { consent: true } : {}),
+    });
+    setLoadingMicrosoft(false);
+  };
 
   return (
     <div className="flex flex-col justify-center gap-2 px-4 sm:px-16">
@@ -55,21 +80,7 @@ export function LoginForm() {
             Policy, including the Limited Use requirements.
           </SectionDescription>
           <div>
-            <Button
-              loading={loadingGoogle}
-              onClick={() => {
-                setLoadingGoogle(true);
-                signIn(
-                  "google",
-                  {
-                    ...(next && next.length > 0
-                      ? { callbackUrl: next }
-                      : { callbackUrl: "/welcome" }),
-                  },
-                  error === "RequiresReconsent" ? { consent: true } : undefined,
-                );
-              }}
-            >
+            <Button loading={loadingGoogle} onClick={handleGoogleSignIn}>
               I agree
             </Button>
           </div>
@@ -79,18 +90,7 @@ export function LoginForm() {
       <Button
         size="2xl"
         loading={loadingMicrosoft}
-        onClick={() => {
-          setLoadingMicrosoft(true);
-          signIn(
-            "microsoft-entra-id",
-            {
-              ...(next && next.length > 0
-                ? { callbackUrl: next }
-                : { callbackUrl: "/welcome" }),
-            },
-            error === "RequiresReconsent" ? { consent: true } : undefined,
-          );
-        }}
+        onClick={handleMicrosoftSignIn}
       >
         <span className="flex items-center justify-center">
           <Image
@@ -103,6 +103,15 @@ export function LoginForm() {
           <span className="ml-2">Sign in with Microsoft</span>
         </span>
       </Button>
+
+      <UIButton
+        variant="ghost"
+        size="lg"
+        className="w-full hover:scale-105 transition-transform"
+        asChild
+      >
+        <Link href="/login/sso">Sign in with SSO</Link>
+      </UIButton>
     </div>
   );
 }

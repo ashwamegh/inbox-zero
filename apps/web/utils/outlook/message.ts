@@ -3,6 +3,7 @@ import type { ParsedMessage } from "@/utils/types";
 import { createScopedLogger } from "@/utils/logger";
 import type { OutlookClient } from "@/utils/outlook/client";
 import { OutlookLabel } from "./label";
+import { escapeODataString } from "@/utils/outlook/odata-escape";
 
 const logger = createScopedLogger("outlook/message");
 
@@ -10,7 +11,7 @@ const logger = createScopedLogger("outlook/message");
 let folderIdCache: Record<string, string> | null = null;
 
 // Well-known folder names in Outlook that are consistent across all languages
-const WELL_KNOWN_FOLDERS = {
+export const WELL_KNOWN_FOLDERS = {
   inbox: "inbox",
   sentitems: "sentitems",
   drafts: "drafts",
@@ -76,18 +77,21 @@ function getOutlookLabels(
       ([_, id]) => id === message.parentFolderId,
     )?.[0];
 
-    if (folderKey === "inbox") {
-      labels.push(OutlookLabel.INBOX);
-    } else if (folderKey === "sentitems") {
-      labels.push(OutlookLabel.SENT);
-    } else if (folderKey === "drafts") {
-      labels.push(OutlookLabel.DRAFT);
-    } else if (folderKey === "archive") {
-      labels.push(OutlookLabel.ARCHIVE);
-    } else if (folderKey === "junkemail") {
-      labels.push(OutlookLabel.SPAM);
-    } else if (folderKey === "deleteditems") {
-      labels.push(OutlookLabel.TRASH);
+    if (folderKey) {
+      const FOLDER_TO_LABEL_MAP = {
+        [WELL_KNOWN_FOLDERS.inbox]: OutlookLabel.INBOX,
+        [WELL_KNOWN_FOLDERS.sentitems]: OutlookLabel.SENT,
+        [WELL_KNOWN_FOLDERS.drafts]: OutlookLabel.DRAFT,
+        [WELL_KNOWN_FOLDERS.archive]: OutlookLabel.ARCHIVE,
+        [WELL_KNOWN_FOLDERS.junkemail]: OutlookLabel.SPAM,
+        [WELL_KNOWN_FOLDERS.deleteditems]: OutlookLabel.TRASH,
+      };
+
+      const label =
+        FOLDER_TO_LABEL_MAP[folderKey as keyof typeof FOLDER_TO_LABEL_MAP];
+      if (label) {
+        labels.push(label);
+      }
     }
   }
 
@@ -96,30 +100,35 @@ function getOutlookLabels(
     labels.push(...message.categories);
   }
 
-  return labels;
+  // Remove duplicates
+  return [...new Set(labels)];
 }
 
 export async function queryBatchMessages(
   client: OutlookClient,
-  {
-    query,
-    maxResults = 20,
-    pageToken,
-    folderId,
-  }: {
+  options: {
     query?: string;
     maxResults?: number;
     pageToken?: string;
     folderId?: string;
   },
 ) {
-  if (maxResults > 20) {
-    throw new Error(
-      "Max results must be 20 or Microsoft Graph API will rate limit us.",
+  const { query, pageToken, folderId } = options;
+
+  const MAX_RESULTS = 20;
+
+  const maxResults = Math.min(options.maxResults || MAX_RESULTS, MAX_RESULTS);
+
+  // Is this true for Microsoft Graph API or was it copy pasted from Gmail?
+  if (options.maxResults && options.maxResults > MAX_RESULTS) {
+    logger.warn(
+      "Max results is greater than 20, which will cause rate limiting",
+      {
+        maxResults,
+      },
     );
   }
 
-  // Get folder IDs first
   const folderIds = await getFolderIds(client);
 
   logger.info("Building Outlook request", {
@@ -176,7 +185,8 @@ export async function queryBatchMessages(
         request = request.skipToken(pageToken);
       }
 
-      const response = await request.get();
+      const response: { value: Message[]; "@odata.nextLink"?: string } =
+        await request.get();
       const messages = await convertMessages(response.value, folderIds);
 
       // For filter, get next page token from @odata.nextLink
@@ -199,10 +209,11 @@ export async function queryBatchMessages(
         request = request.skipToken(pageToken);
       }
 
-      const response = await request.get();
+      const response: { value: Message[]; "@odata.nextLink"?: string } =
+        await request.get();
       // Filter messages to only include inbox and archive folders
       const filteredMessages = response.value.filter(
-        (message: Message) =>
+        (message) =>
           message.parentFolderId === inboxFolderId ||
           message.parentFolderId === archiveFolderId,
       );
@@ -237,7 +248,7 @@ export async function queryBatchMessages(
       .skip(pageToken ? Number.parseInt(pageToken, 10) : 0)
       .orderby("receivedDateTime DESC");
 
-    const response = await request.get();
+    const response: { value: Message[] } = await request.get();
     const messages = await convertMessages(response.value, folderIds);
 
     // For non-search, calculate next page token based on message count
@@ -282,7 +293,6 @@ export async function getMessage(
     )
     .get();
 
-  // Get folder IDs to properly map labels
   const folderIds = await getFolderIds(client);
 
   return convertMessage(message, folderIds);
@@ -306,10 +316,13 @@ export async function getMessages(
     );
 
   if (options.query) {
-    request = request.filter(`contains(subject, '${options.query}')`);
+    request = request.filter(
+      `contains(subject, '${escapeODataString(options.query)}')`,
+    );
   }
 
-  const response = await request.get();
+  const response: { value: Message[]; "@odata.nextLink"?: string } =
+    await request.get();
 
   // Get folder IDs to properly map labels
   const folderIds = await getFolderIds(client);

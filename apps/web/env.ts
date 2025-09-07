@@ -9,6 +9,7 @@ const llmProviderEnum = z.enum([
   "bedrock",
   "openrouter",
   "groq",
+  "aigateway",
   "ollama",
 ]);
 
@@ -17,10 +18,8 @@ export const env = createEnv({
     NODE_ENV: z.enum(["development", "production", "test"]),
     DATABASE_URL: z.string().url(),
 
-    NEXTAUTH_SECRET: z.string().min(1),
-    NEXTAUTH_URL: z.string().optional(),
-    AUTH_TRUST_HOST: z.coerce.boolean().optional(),
-
+    AUTH_SECRET: z.string().optional(),
+    NEXTAUTH_SECRET: z.string().optional(),
     GOOGLE_CLIENT_ID: z.string().min(1),
     GOOGLE_CLIENT_SECRET: z.string().min(1),
     MICROSOFT_CLIENT_ID: z.string().optional(),
@@ -42,6 +41,11 @@ export const env = createEnv({
     CHAT_LLM_MODEL: z.string().optional(),
     CHAT_OPENROUTER_PROVIDERS: z.string().optional(), // Comma-separated list of OpenRouter providers for chat (e.g., "Google Vertex,Anthropic")
 
+    OPENROUTER_BACKUP_MODEL: z
+      .string()
+      .optional()
+      .default("google/gemini-2.5-flash"),
+
     OPENAI_API_KEY: z.string().optional(),
     ANTHROPIC_API_KEY: z.string().optional(),
     BEDROCK_ACCESS_KEY: z.string().optional(),
@@ -50,6 +54,7 @@ export const env = createEnv({
     GOOGLE_API_KEY: z.string().optional(),
     GROQ_API_KEY: z.string().optional(),
     OPENROUTER_API_KEY: z.string().optional(),
+    AI_GATEWAY_API_KEY: z.string().optional(),
     OLLAMA_BASE_URL: z.string().optional(),
 
     UPSTASH_REDIS_URL: z.string().optional(),
@@ -62,6 +67,8 @@ export const env = createEnv({
 
     GOOGLE_PUBSUB_TOPIC_NAME: z.string().min(1),
     GOOGLE_PUBSUB_VERIFICATION_TOKEN: z.string().optional(),
+
+    MICROSOFT_WEBHOOK_CLIENT_STATE: z.string().optional(),
 
     SENTRY_AUTH_TOKEN: z.string().optional(),
     SENTRY_ORGANIZATION: z.string().optional(),
@@ -142,7 +149,7 @@ export const env = createEnv({
     NEXT_PUBLIC_POSTHOG_API_HOST: z.string().optional(),
     NEXT_PUBLIC_POSTHOG_HERO_AB: z.string().optional(),
     NEXT_PUBLIC_POSTHOG_ONBOARDING_SURVEY_ID: z.string().optional(),
-    NEXT_PUBLIC_BASE_URL: z.string().default("https://www.getinboxzero.com"),
+    NEXT_PUBLIC_BASE_URL: z.string(),
     NEXT_PUBLIC_CONTACTS_ENABLED: z.coerce.boolean().optional().default(false),
     NEXT_PUBLIC_SENTRY_DSN: z.string().optional(),
     NEXT_PUBLIC_SUPPORT_EMAIL: z
@@ -157,12 +164,13 @@ export const env = createEnv({
       .default(false),
     NEXT_PUBLIC_AXIOM_DATASET: z.string().optional(),
     NEXT_PUBLIC_AXIOM_TOKEN: z.string().optional(),
+    NEXT_PUBLIC_LOG_SCOPES: z
+      .string()
+      .optional()
+      .transform((value) => value?.split(",")),
     NEXT_PUBLIC_BEDROCK_SONNET_MODEL: z
       .string()
       .default("us.anthropic.claude-3-7-sonnet-20250219-v1:0"),
-    NEXT_PUBLIC_BEDROCK_ANTHROPIC_BACKUP_MODEL: z
-      .string()
-      .default("us.anthropic.claude-3-5-sonnet-20241022-v2:0"),
     NEXT_PUBLIC_OLLAMA_MODEL: z.string().optional(),
     NEXT_PUBLIC_APP_HOME_PATH: z.string().default("/setup"),
     NEXT_PUBLIC_DUB_REFER_DOMAIN: z.string().optional(),
@@ -214,10 +222,9 @@ export const env = createEnv({
       process.env.NEXT_PUBLIC_WELCOME_UPGRADE_ENABLED,
     NEXT_PUBLIC_AXIOM_DATASET: process.env.NEXT_PUBLIC_AXIOM_DATASET,
     NEXT_PUBLIC_AXIOM_TOKEN: process.env.NEXT_PUBLIC_AXIOM_TOKEN,
+    NEXT_PUBLIC_LOG_SCOPES: process.env.NEXT_PUBLIC_LOG_SCOPES,
     NEXT_PUBLIC_BEDROCK_SONNET_MODEL:
       process.env.NEXT_PUBLIC_BEDROCK_SONNET_MODEL,
-    NEXT_PUBLIC_BEDROCK_ANTHROPIC_BACKUP_MODEL:
-      process.env.NEXT_PUBLIC_BEDROCK_ANTHROPIC_BACKUP_MODEL,
     NEXT_PUBLIC_OLLAMA_MODEL: process.env.NEXT_PUBLIC_OLLAMA_MODEL,
     NEXT_PUBLIC_APP_HOME_PATH: process.env.NEXT_PUBLIC_APP_HOME_PATH,
     NEXT_PUBLIC_DUB_REFER_DOMAIN: process.env.NEXT_PUBLIC_DUB_REFER_DOMAIN,

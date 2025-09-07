@@ -15,7 +15,7 @@ import { getAccessTokenFromClient } from "@/utils/gmail/client";
 import { GmailLabel } from "@/utils/gmail/label";
 import { isIgnoredSender } from "@/utils/filter-ignored-senders";
 import parse from "gmail-api-parse-message";
-import type { EmailProvider } from "@/utils/email/provider";
+import type { EmailProvider } from "@/utils/email/types";
 
 const logger = createScopedLogger("gmail/message");
 
@@ -271,19 +271,24 @@ export async function getMessages(
 
 export async function queryBatchMessages(
   gmail: gmail_v1.Gmail,
-  {
-    query,
-    maxResults = 20,
-    pageToken,
-  }: {
+  options: {
     query?: string;
     maxResults?: number;
     pageToken?: string;
   },
 ) {
-  if (maxResults > 20) {
-    throw new Error(
-      "Max results must be 20 or Google will rate limit us and return 429 errors.",
+  const { query, pageToken } = options;
+
+  const MAX_RESULTS = 20;
+
+  const maxResults = Math.min(options.maxResults || MAX_RESULTS, MAX_RESULTS);
+
+  if (options.maxResults && options.maxResults > MAX_RESULTS) {
+    logger.warn(
+      "Max results is greater than 20, which will cause rate limiting",
+      {
+        maxResults,
+      },
     );
   }
 

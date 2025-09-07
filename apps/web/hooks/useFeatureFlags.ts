@@ -37,13 +37,10 @@ export function usePricingFrequencyDefault() {
     ) as PricingFrequencyDefault) || "control"
   );
 }
-export function useDigestEnabled() {
-  return useFeatureFlagEnabled("digest-emails");
-  // return true;
-}
 
 export function useDelayedActionsEnabled() {
-  return useFeatureFlagEnabled("delayed-actions");
+  return true;
+  // return useFeatureFlagEnabled("delayed-actions");
 }
 
 export type TestimonialsVariant = "control" | "senja-widget";
@@ -51,6 +48,24 @@ export type TestimonialsVariant = "control" | "senja-widget";
 export function useTestimonialsVariant() {
   return (
     (useFeatureFlagVariantKey("testimonials") as TestimonialsVariant) ||
+    "control"
+  );
+}
+
+export type OnboardingVariant = "control" | "new-onboarding";
+
+export function useOnboardingVariant() {
+  return (
+    (useFeatureFlagVariantKey("onboarding-flow") as OnboardingVariant) ||
+    "control"
+  );
+}
+
+export type PricingCopyVariant = "control" | "free-trial-emphasis";
+
+export function usePricingCopyVariant() {
+  return (
+    (useFeatureFlagVariantKey("pricing-copy") as PricingCopyVariant) ||
     "control"
   );
 }

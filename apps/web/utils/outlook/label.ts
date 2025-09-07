@@ -1,16 +1,15 @@
 import type { OutlookClient } from "@/utils/outlook/client";
 import { createScopedLogger } from "@/utils/logger";
 import { publishArchive, type TinybirdEmailAction } from "@inboxzero/tinybird";
+import { WELL_KNOWN_FOLDERS } from "./message";
+
 import { inboxZeroLabels, type InboxZeroLabel } from "@/utils/label";
+import type {
+  OutlookCategory,
+  Message,
+} from "@microsoft/microsoft-graph-types";
 
 const logger = createScopedLogger("outlook/label");
-
-// Define our own Category type since Microsoft Graph types don't export it
-interface OutlookCategory {
-  id: string;
-  displayName?: string;
-  color?: string;
-}
 
 // Outlook doesn't have system labels like Gmail, but we map common categories
 // Using same format as Gmail for consistency
@@ -55,11 +54,11 @@ export const OUTLOOK_COLOR_MAP = {
 } as const;
 
 export async function getLabels(client: OutlookClient) {
-  const response = await client
+  const response: { value: OutlookCategory[] } = await client
     .getClient()
     .api("/me/outlook/masterCategories")
     .get();
-  return (response.value as OutlookCategory[]).map((label) => ({
+  return response.value.map((label) => ({
     ...label,
     name: label.displayName || label.id,
   }));
@@ -70,11 +69,11 @@ export async function getLabelById(options: {
   id: string;
 }) {
   const { client, id } = options;
-  const response = await client
+  const response: OutlookCategory = await client
     .getClient()
     .api(`/me/outlook/masterCategories/${id}`)
     .get();
-  return response as OutlookCategory;
+  return response;
 }
 
 export async function createLabel({
@@ -93,14 +92,14 @@ export async function createLabel({
         ? color
         : OUTLOOK_COLORS[Math.floor(Math.random() * OUTLOOK_COLORS.length)];
 
-    const response = await client
+    const response: OutlookCategory = await client
       .getClient()
       .api("/me/outlook/masterCategories")
       .post({
         displayName: name,
         color: outlookColor,
       });
-    return response as OutlookCategory;
+    return response;
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
@@ -215,15 +214,69 @@ export async function labelThread({
   // In Outlook, we need to update each message in the thread
   // Escape single quotes in threadId for the filter
   const escapedThreadId = threadId.replace(/'/g, "''");
-  const messages = await client
+  const messages: { value: Message[] } = await client
     .getClient()
     .api("/me/messages")
     .filter(`conversationId eq '${escapedThreadId}'`)
     .get();
 
   await Promise.all(
-    messages.value.map((message: { id: string }) =>
-      labelMessage({ client, messageId: message.id, categories }),
+    messages.value.map((message) =>
+      labelMessage({ client, messageId: message.id!, categories }),
+    ),
+  );
+}
+
+// Doesn't use pagination. But this function not really used anyway. Can add in the future of needed.
+export async function removeThreadLabel({
+  client,
+  threadId,
+  categoryName,
+}: {
+  client: OutlookClient;
+  threadId: string;
+  categoryName: string;
+}) {
+  if (!categoryName) {
+    logger.warn("Category name is empty, skipping removal", { threadId });
+    return;
+  }
+
+  // Get all messages in the thread
+  const escapedThreadId = threadId.replace(/'/g, "''");
+  const messages = await client
+    .getClient()
+    .api("/me/messages")
+    .filter(`conversationId eq '${escapedThreadId}'`)
+    .select("id,categories")
+    .get();
+
+  // Remove the category from each message
+  await Promise.all(
+    messages.value.map(
+      async (message: { id: string; categories?: string[] }) => {
+        if (!message.categories || !message.categories.includes(categoryName)) {
+          return; // Category not present, nothing to remove
+        }
+
+        const updatedCategories = message.categories.filter(
+          (cat) => cat !== categoryName,
+        );
+
+        try {
+          await client
+            .getClient()
+            .api(`/me/messages/${message.id}`)
+            .patch({ categories: updatedCategories });
+        } catch (error) {
+          logger.warn("Failed to remove category from message", {
+            messageId: message.id,
+            threadId,
+            categoryName,
+            error: error instanceof Error ? error.message : error,
+          });
+        }
+      },
     ),
   );
 }
@@ -233,23 +286,49 @@ export async function archiveThread({
   threadId,
   ownerEmail,
   actionSource,
-  labelId,
+  folderId = "archive",
 }: {
   client: OutlookClient;
   threadId: string;
   ownerEmail: string;
   actionSource: TinybirdEmailAction["actionSource"];
-  labelId?: string;
+  folderId?: string;
 }) {
+  if (!folderId) {
+    logger.warn("No folderId provided, skipping archive operation", {
+      threadId,
+      ownerEmail,
+      actionSource,
+    });
+    return;
+  }
+
+  // Check if the destination folder exists (only for custom folders, well-known names can be trusted and used directly)
+  const wellKnownFolders = Object.keys(WELL_KNOWN_FOLDERS);
+  if (!wellKnownFolders.includes(folderId.toLowerCase())) {
+    try {
+      await client.getClient().api(`/me/mailFolders/${folderId}`).get();
+    } catch (error) {
+      logger.warn(
+        "Custom destination folder not found, skipping archive operation",
+        {
+          folderId,
+          threadId,
+          error,
+        },
+      );
+      return;
+    }
+  }
+
   try {
-    // In Outlook, archiving is moving to the Archive folder
+    // In Outlook, archiving is moving to a folder
     // We need to move each message in the thread individually
-    // Escape single quotes in threadId for the filter
     const escapedThreadId = threadId.replace(/'/g, "''");
     const messages = await client
       .getClient()
       .api("/me/messages")
-      .filter(`conversationId eq '${escapedThreadId}'`)
+      .filter(`conversationId eq '${escapedThreadId}'`) // Escape single quotes in threadId for the filter
       .get();
 
     const archivePromise = Promise.all(
@@ -259,11 +338,11 @@ export async function archiveThread({
             .getClient()
             .api(`/me/messages/${message.id}/move`)
             .post({
-              destinationId: "archive",
+              destinationId: folderId,
             });
         } catch (error) {
-          // Log the error but don't fail the entire operation
-          logger.warn("Failed to move message to archive", {
+          logger.warn("Failed to move message to folder", {
+            folderId,
             messageId: message.id,
             threadId,
             error: error instanceof Error ? error.message : error,
@@ -291,12 +370,17 @@ export async function archiveThread({
         logger.warn("Thread not found", { threadId, userEmail: ownerEmail });
         return { status: 404, message: "Thread not found" };
       }
-      logger.error("Failed to archive thread", { threadId, error });
+      logger.error("Failed to move thread to folder", {
+        folderId,
+        threadId,
+        error,
+      });
       throw error;
     }
 
     if (publishResult.status === "rejected") {
-      logger.error("Failed to publish archive action", {
+      logger.error("Failed to publish action to move thread to folder", {
+        folderId,
         threadId,
         error: publishResult.reason,
       });
@@ -325,7 +409,7 @@ export async function archiveThread({
       );
 
       if (threadMessages.length > 0) {
-        // Move each message in the thread to the archive folder
+        // Move each message in the thread to the destination folder
         const movePromises = threadMessages.map(
           async (message: { id: string }) => {
             try {
@@ -333,11 +417,12 @@ export async function archiveThread({
                 .getClient()
                 .api(`/me/messages/${message.id}/move`)
                 .post({
-                  destinationId: "archive",
+                  destinationId: folderId,
                 });
             } catch (moveError) {
               // Log the error but don't fail the entire operation
-              logger.warn("Failed to move message to archive", {
+              logger.warn("Failed to move message to folder", {
+                folderId,
                 messageId: message.id,
                 threadId,
                 error:
@@ -352,7 +437,7 @@ export async function archiveThread({
       } else {
         // If no messages found, try treating threadId as a messageId
         await client.getClient().api(`/me/messages/${threadId}/move`).post({
-          destinationId: "archive",
+          destinationId: folderId,
         });
       }
 
@@ -365,7 +450,8 @@ export async function archiveThread({
           timestamp: Date.now(),
         });
       } catch (publishError) {
-        logger.error("Failed to publish archive action", {
+        logger.error("Failed to publish action to move thread to folder", {
+          folderId,
           email: ownerEmail,
           threadId,
           error: publishError,
@@ -374,7 +460,8 @@ export async function archiveThread({
 
       return { status: 200 };
     } catch (directError) {
-      logger.error("Failed to archive thread", {
+      logger.error("Failed to move thread to folder", {
+        folderId,
         threadId,
         error: directError,
       });

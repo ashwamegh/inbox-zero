@@ -1,6 +1,8 @@
 "use server";
 
+import { z } from "zod";
 import { actionClient } from "@/utils/actions/safe-action";
+import { NEEDS_REPLY_LABEL_NAME } from "@/utils/reply-tracker/consts";
 import {
   saveAiSettingsBody,
   saveEmailUpdateSettingsBody,
@@ -74,6 +76,69 @@ export const updateDigestScheduleAction = actionClient
       create,
       update,
     });
+
+    return { success: true };
+  });
+
+export const updateReplyTrackingAction = actionClient
+  .metadata({ name: "updateReplyTracking" })
+  .schema(z.object({ enabled: z.boolean() }))
+  .action(async ({ ctx: { emailAccountId }, parsedInput: { enabled } }) => {
+    // Find all rules with "To Reply" label first
+    const toReplyRules = await prisma.rule.findMany({
+      where: {
+        emailAccountId,
+        actions: {
+          some: {
+            type: ActionType.LABEL,
+            label: NEEDS_REPLY_LABEL_NAME,
+          },
+        },
+      },
+      include: {
+        actions: true,
+      },
+    });
+
+    // Prepare the operations
+    const rulesToAddTrackThread = toReplyRules.filter(
+      (rule) =>
+        enabled &&
+        !rule.actions.some((action) => action.type === ActionType.TRACK_THREAD),
+    );
+
+    const rulesToRemoveTrackThread = toReplyRules.filter(
+      (rule) =>
+        !enabled &&
+        rule.actions.some((action) => action.type === ActionType.TRACK_THREAD),
+    );
+
+    // Execute all updates atomically
+    await prisma.$transaction([
+      // Update email account setting
+      prisma.emailAccount.update({
+        where: { id: emailAccountId },
+        data: { outboundReplyTracking: enabled },
+      }),
+      // Add TRACK_THREAD actions
+      ...rulesToAddTrackThread.map((rule) =>
+        prisma.action.create({
+          data: {
+            type: ActionType.TRACK_THREAD,
+            ruleId: rule.id,
+          },
+        }),
+      ),
+      // Remove TRACK_THREAD actions
+      ...rulesToRemoveTrackThread.map((rule) =>
+        prisma.action.deleteMany({
+          where: {
+            ruleId: rule.id,
+            type: ActionType.TRACK_THREAD,
+          },
+        }),
+      ),
+    ]);
 
     return { success: true };
   });

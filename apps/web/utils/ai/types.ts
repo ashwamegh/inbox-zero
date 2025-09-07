@@ -8,6 +8,7 @@ export type EmailForAction = Pick<
   | "headers"
   | "textPlain"
   | "textHtml"
+  | "snippet"
   | "attachments"
   | "internalDate"
 >;
@@ -22,5 +23,7 @@ export type ActionItem = {
   cc?: ExecutedAction["cc"];
   bcc?: ExecutedAction["bcc"];
   url?: ExecutedAction["url"];
+  folderName?: ExecutedAction["folderName"];
+  folderId?: ExecutedAction["folderId"];
   delayInMinutes?: number | null;
 };

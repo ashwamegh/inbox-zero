@@ -2,7 +2,7 @@ import type { gmail_v1 } from "@googleapis/gmail";
 import prisma from "@/utils/prisma";
 import { emailToContent } from "@/utils/mail";
 import { GmailLabel } from "@/utils/gmail/label";
-import { runColdEmailBlockerWithProvider } from "@/utils/cold-email/is-cold-email";
+import { runColdEmailBlocker } from "@/utils/cold-email/is-cold-email";
 import { runRules } from "@/utils/ai/choose-rule/run-rules";
 import { blockUnsubscribedEmails } from "@/app/api/google/webhook/block-unsubscribed-emails";
 import { categorizeSender } from "@/utils/categorize/senders/categorize";
@@ -24,23 +24,31 @@ import type { ParsedMessage } from "@/utils/types";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
 import { formatError } from "@/utils/error";
 import { createEmailProvider } from "@/utils/email/provider";
+import type { EmailProvider } from "@/utils/email/types";
 import { enqueueDigestItem } from "@/utils/digest/index";
+import { HistoryEventType } from "@/app/api/google/webhook/types";
+import { handleLabelRemovedEvent } from "@/app/api/google/webhook/process-label-removed-event";
 
 export async function processHistoryItem(
-  {
-    message,
-  }: gmail_v1.Schema$HistoryMessageAdded | gmail_v1.Schema$HistoryLabelAdded,
+  historyItem: {
+    type: HistoryEventType;
+    item:
+      | gmail_v1.Schema$HistoryMessageAdded
+      | gmail_v1.Schema$HistoryLabelAdded
+      | gmail_v1.Schema$HistoryLabelRemoved;
+  },
   {
     gmail,
     emailAccount,
-    accessToken,
     hasAutomationRules,
     hasAiAccess,
     rules,
   }: ProcessHistoryOptions,
 ) {
-  const messageId = message?.id;
-  const threadId = message?.threadId;
+  const { type, item } = historyItem;
+  const messageId = item.message?.id;
+  const threadId = item.message?.threadId;
+
   const emailAccountId = emailAccount.id;
   const userEmail = emailAccount.email;
 
@@ -52,6 +60,11 @@ export async function processHistoryItem(
     threadId,
   };
 
+  const provider = await createEmailProvider({
+    emailAccountId,
+    provider: "google",
+  });
+
   const isFree = await markMessageAsProcessing({ userEmail, messageId });
 
   if (!isFree) {
@@ -59,16 +72,22 @@ export async function processHistoryItem(
     return;
   }
 
-  logger.info("Getting message", loggerOptions);
+  if (type === HistoryEventType.LABEL_REMOVED) {
+    logger.info("Processing label removed event for learning", loggerOptions);
+    return handleLabelRemovedEvent(item, {
+      emailAccount,
+      provider,
+    });
+  } else if (type === HistoryEventType.LABEL_ADDED) {
+    logger.info("Processing label added event for learning", loggerOptions);
+    return;
+  }
 
-  const emailProvider = await createEmailProvider({
-    emailAccountId,
-    provider: "google",
-  });
+  logger.info("Getting message", loggerOptions);
 
   try {
     const [parsedMessage, hasExistingRule] = await Promise.all([
-      emailProvider.getMessage(messageId),
+      provider.getMessage(messageId),
       prisma.executedRule.findUnique({
         where: {
           unique_emailAccount_thread_message: {
@@ -97,11 +116,6 @@ export async function processHistoryItem(
       emailToCheck: parsedMessage.headers.to,
     });
 
-    const provider = await createEmailProvider({
-      emailAccountId,
-      provider: "google",
-    });
-
     if (isForAssistant) {
       logger.info("Passing through assistant email.", loggerOptions);
       return processAssistantEmail({
@@ -125,7 +139,7 @@ export async function processHistoryItem(
     const isOutbound = parsedMessage.labelIds?.includes(GmailLabel.SENT);
 
     if (isOutbound) {
-      await handleOutbound(emailAccount, parsedMessage, gmail);
+      await handleOutbound(emailAccount, parsedMessage, provider);
       return;
     }
 
@@ -152,7 +166,7 @@ export async function processHistoryItem(
 
       const content = emailToContent(parsedMessage);
 
-      const response = await runColdEmailBlockerWithProvider({
+      const response = await runColdEmailBlocker({
         email: {
           from: parsedMessage.headers.from,
           to: "",
@@ -164,6 +178,7 @@ export async function processHistoryItem(
         },
         provider,
         emailAccount,
+        modelType: "default",
       });
 
       if (response.isColdEmail) {
@@ -193,7 +208,7 @@ export async function processHistoryItem(
         select: { category: true },
       });
       if (!existingSender?.category) {
-        await categorizeSender(sender, emailAccount, gmail, accessToken);
+        await categorizeSender(sender, emailAccount, provider);
       }
     }
 
@@ -201,11 +216,12 @@ export async function processHistoryItem(
       logger.info("Running rules...", loggerOptions);
 
       await runRules({
-        client: provider,
+        provider,
         message: parsedMessage,
         rules,
         emailAccount,
         isTest: false,
+        modelType: "default",
       });
     }
   } catch (error: unknown) {
@@ -225,7 +241,7 @@ export async function processHistoryItem(
 async function handleOutbound(
   emailAccount: EmailAccountWithAI,
   message: ParsedMessage,
-  gmail: gmail_v1.Gmail,
+  provider: EmailProvider,
 ) {
   const loggerOptions = {
     email: emailAccount.email,
@@ -241,9 +257,13 @@ async function handleOutbound(
     trackSentDraftStatus({
       emailAccountId: emailAccount.id,
       message,
-      gmail,
+      provider,
     }),
-    handleOutboundReply({ emailAccount, message, gmail }),
+    handleOutboundReply({
+      emailAccount,
+      message,
+      provider,
+    }),
   ]);
 
   if (trackingResult.status === "rejected") {
@@ -266,7 +286,7 @@ async function handleOutbound(
     await cleanupThreadAIDrafts({
       threadId: message.threadId,
       emailAccountId: emailAccount.id,
-      gmail,
+      provider,
     });
   } catch (cleanupError) {
     logger.error("Error during thread draft cleanup", {

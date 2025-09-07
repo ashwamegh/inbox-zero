@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useAction } from "next-safe-action/hooks";
+import { BrainIcon } from "lucide-react";
 import { ViewGroup } from "@/app/(app)/[emailAccountId]/assistant/group/ViewGroup";
 import {
   Dialog,
@@ -54,8 +55,9 @@ export function LearnedPatternsDialog({
     <Dialog>
       <DialogTrigger asChild>
         <Button
-          variant="ghost"
+          variant="outline"
           size="sm"
+          Icon={BrainIcon}
           onClick={async () => {
             if (!ruleId) return;
             if (groupId) return;

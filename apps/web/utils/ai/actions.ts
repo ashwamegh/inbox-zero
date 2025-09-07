@@ -4,7 +4,7 @@ import { callWebhook } from "@/utils/webhook";
 import type { ActionItem, EmailForAction } from "@/utils/ai/types";
 import { coordinateReplyProcess } from "@/utils/reply-tracker/inbound";
 import { internalDateToDate } from "@/utils/date";
-import type { EmailProvider } from "@/utils/email/provider";
+import type { EmailProvider } from "@/utils/email/types";
 import { enqueueDigestItem } from "@/utils/digest/index";
 
 const logger = createScopedLogger("ai-actions");
@@ -65,6 +65,8 @@ export const runActionFunction = async (options: {
       return track_thread(opts);
     case ActionType.DIGEST:
       return digest(opts);
+    case ActionType.MOVE_FOLDER:
+      return move_folder(opts);
     default:
       throw new Error(`Unknown action: ${action}`);
   }
@@ -112,6 +114,9 @@ const draft: ActionFunction<{
       subject: email.headers.subject,
       date: email.headers.date,
       labelIds: [],
+      textPlain: email.textPlain,
+      textHtml: email.textHtml,
+      attachments: email.attachments,
     },
     draftArgs,
     executedRule,
@@ -123,7 +128,7 @@ const reply: ActionFunction<{
   content?: string | null;
   cc?: string | null;
   bcc?: string | null;
-}> = async ({ client, email, args, userEmail, userId, emailAccountId }) => {
+}> = async ({ client, email, args, emailAccountId }) => {
   if (!args.content) return;
 
   await client.replyToEmail(
@@ -249,8 +254,6 @@ const mark_read: ActionFunction<Record<string, unknown>> = async ({
 const track_thread: ActionFunction<Record<string, unknown>> = async ({
   client,
   email,
-  userEmail,
-  userId,
   emailAccountId,
 }) => {
   await coordinateReplyProcess({
@@ -265,4 +268,13 @@ const track_thread: ActionFunction<Record<string, unknown>> = async ({
 const digest: ActionFunction<any> = async ({ email, emailAccountId, args }) => {
   const actionId = args.id;
   await enqueueDigestItem({ email, emailAccountId, actionId });
+};
+
+const move_folder: ActionFunction<any> = async ({
+  client,
+  email,
+  userEmail,
+  args,
+}) => {
+  await client.moveThreadToFolder(email.threadId, userEmail, args.folderId);
 };

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { signIn } from "next-auth/react";
+import { signIn } from "@/utils/auth-client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { toastError } from "@/components/Toast";
@@ -14,10 +14,15 @@ import { DialogTrigger } from "@/components/ui/dialog";
 import { Dialog } from "@/components/ui/dialog";
 import type { GetAuthLinkUrlResponse } from "@/app/api/google/linking/auth-url/route";
 import type { GetOutlookAuthLinkUrlResponse } from "@/app/api/outlook/linking/auth-url/route";
+import { SCOPES as GMAIL_SCOPES } from "@/utils/gmail/scopes";
 
 export function AddAccount() {
   const handleConnectGoogle = async () => {
-    await signIn("google", { callbackUrl: "/accounts", redirect: true });
+    await signIn.social({
+      provider: "google",
+      callbackURL: "/accounts",
+      scopes: [...GMAIL_SCOPES],
+    });
   };
 
   const handleMergeGoogle = async () => {
@@ -31,23 +36,30 @@ export function AddAccount() {
     window.location.href = data.url;
   };
 
-  const handleConnectMicrosoft = async () => {
-    await signIn("microsoft-entra-id", {
-      callbackUrl: "/accounts",
-      redirect: true,
-    });
-  };
+  const handleConnectMicrosoft = async (action: "merge" | "create") => {
+    const response = await fetch(
+      `/api/outlook/linking/auth-url?action=${action}`,
+      {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      },
+    );
 
-  const handleMergeMicrosoft = async () => {
-    const response = await fetch("/api/outlook/linking/auth-url", {
-      method: "GET",
-      headers: { "Content-Type": "application/json" },
-    });
+    if (!response.ok) {
+      toastError({
+        title: "Error initiating Microsoft link",
+        description: "Please try again or contact support",
+      });
+      return;
+    }
 
     const data: GetOutlookAuthLinkUrlResponse = await response.json();
 
     window.location.href = data.url;
   };
+
+  const handleCreateMicrosoft = () => handleConnectMicrosoft("create");
+  const handleMergeMicrosoft = () => handleConnectMicrosoft("merge");
 
   return (
     <Card className="flex items-center justify-center">
@@ -61,7 +73,7 @@ export function AddAccount() {
         <AddEmailAccount
           name="Microsoft"
           image="/images/microsoft.svg"
-          handleConnect={handleConnectMicrosoft}
+          handleConnect={handleCreateMicrosoft}
           handleMerge={handleMergeMicrosoft}
         />
       </CardContent>
@@ -116,14 +128,18 @@ function AddEmailAccount({
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <Button disabled={isConnecting} className="mt-auto w-full">
+        <Button
+          disabled={isConnecting}
+          variant="outline"
+          className="mt-auto w-full"
+        >
           <Image src={image} alt="" width={24} height={24} unoptimized />
           <span className="ml-2">
             {isConnecting ? "Connecting..." : `Add ${name} Account`}
           </span>
         </Button>
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle>Add {name} Account</DialogTitle>
           <DialogDescription>
@@ -139,7 +155,7 @@ function AddEmailAccount({
             disabled={isMerging || isConnecting}
             onClick={onMerge}
           >
-            Yes
+            Yes, it's an existing Inbox Zero account
           </Button>
           <Button
             variant="outline"
@@ -148,7 +164,7 @@ function AddEmailAccount({
             disabled={isMerging || isConnecting}
             onClick={onConnect}
           >
-            No
+            No, it's a new account
           </Button>
         </DialogFooter>
       </DialogContent>

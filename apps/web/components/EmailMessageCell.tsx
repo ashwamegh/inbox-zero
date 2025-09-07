@@ -18,6 +18,7 @@ import {
   NEEDS_REPLY_LABEL_NAME,
   AWAITING_REPLY_LABEL_NAME,
 } from "@/utils/reply-tracker/consts";
+import { isGoogleProvider } from "@/utils/email/provider-types";
 
 export function EmailMessageCell({
   sender,
@@ -91,21 +92,28 @@ export function EmailMessageCell({
       <MessageText className="flex items-center">
         <span className="max-w-[300px] truncate">
           {extractNameFromEmail(sender)}
-        </span>{" "}
-        <Link
-          className="ml-2 hover:text-foreground"
-          href={getEmailUrlForMessage(messageId, threadId, userEmail, provider)}
-          target="_blank"
-        >
-          <ExternalLinkIcon className="h-4 w-4" />
-        </Link>
-        {!hideViewEmailButton && provider === "google" && (
-          <ViewEmailButton
-            threadId={threadId}
-            messageId={messageId}
-            size="xs"
-            className="ml-1.5"
-          />
+        </span>
+        {!hideViewEmailButton && isGoogleProvider(provider) && (
+          <>
+            <Link
+              className="ml-2 hover:text-foreground"
+              href={getEmailUrlForMessage(
+                messageId,
+                threadId,
+                userEmail,
+                provider,
+              )}
+              target="_blank"
+            >
+              <ExternalLinkIcon className="h-4 w-4" />
+            </Link>
+            <ViewEmailButton
+              threadId={threadId}
+              messageId={messageId}
+              size="xs"
+              className="ml-1.5"
+            />
+          </>
         )}
         {labelsToDisplay && labelsToDisplay.length > 0 && (
           <span className="ml-2 flex flex-wrap items-center gap-1">

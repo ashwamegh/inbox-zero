@@ -2,10 +2,10 @@
 
 <p align="center">
   <a href="https://www.getinboxzero.com">
-    <h1 align="center">Inbox Zero - Your AI Email Assistant</h1>
+    <h1 align="center">Inbox Zero - your 24/7 AI email assistant</h1>
   </a>
   <p align="center">
-    Open source email app to reach inbox zero fast.
+    Organizes your inbox, pre-drafts replies, and tracks follow‑ups - so you reach inbox zero faster. Open source.
     <br />
     <a href="https://www.getinboxzero.com">Website</a>
     ·
@@ -15,32 +15,34 @@
   </p>
 </p>
 
-## About
+<div align="center">
 
-There are two parts to Inbox Zero:
+![Stars](https://img.shields.io/github/stars/elie222/inbox-zero?labelColor=black&style=for-the-badge&color=2563EB)
+![Forks](https://img.shields.io/github/forks/elie222/inbox-zero?labelColor=black&style=for-the-badge&color=2563EB)
 
-1. An AI email assistant that helps you spend less time on email.
-2. Open source AI email client.
+<a href="https://trendshift.io/repositories/6400" target="_blank"><img src="https://trendshift.io/api/badge/repositories/6400" alt="elie222%2Finbox-zero | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
-If you're looking to contribute to the project, the email client is the best place to do this.
+[![Vercel OSS Program](https://vercel.com/oss/program-badge.svg)](https://vercel.com/oss)
+
+</div>
+
+## Mission
+
+To help you spend less time in your inbox, so you can focus on what matters.
 
 <br />
-<a href="https://vercel.com/oss">
-  <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge.svg" />
-</a
 
-<br />
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Felie222%2Finbox-zero&env=NEXTAUTH_SECRET,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,MICROSOFT_CLIENT_ID,MICROSOFT_CLIENT_SECRET,EMAIL_ENCRYPT_SECRET,EMAIL_ENCRYPT_SALT,UPSTASH_REDIS_URL,UPSTASH_REDIS_TOKEN,GOOGLE_PUBSUB_TOPIC_NAME,DATABASE_URL)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Felie222%2Finbox-zero&env=AUTH_SECRET,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,MICROSOFT_CLIENT_ID,MICROSOFT_CLIENT_SECRET,EMAIL_ENCRYPT_SECRET,EMAIL_ENCRYPT_SALT,UPSTASH_REDIS_URL,UPSTASH_REDIS_TOKEN,GOOGLE_PUBSUB_TOPIC_NAME,DATABASE_URL,NEXT_PUBLIC_BASE_URL)
 
 ## Features
 
-- **AI Personal Assistant:** Manages your email for you based on a plain text prompt file. It can take any action a human assistant can take on your behalf (Draft reply, Label, Archive, Reply, Forward, Mark Spam, and even call a webhook).
-- **Reply Zero:** Track emails that need your reply and those awaiting responses.
-- **Smart Categories:** Categorize everyone that's ever emailed you.
-- **Bulk Unsubscriber:** Quickly unsubscribe from emails you never read in one-click.
-- **Cold Email Blocker:** Automatically block cold emails.
-- **Email Analytics:** Track your email activity with daily, weekly, and monthly stats.
+- **AI Personal Assistant:** Organizes your inbox and pre-drafts replies in your tone and style.
+- **Cursor Rules for email:** Explain in plain English how your AI should handle your inbox.
+- **Reply Zero:** Track emails to reply to and those awaiting responses.
+- **Smart Categories:** Automatically categorize every sender.
+- **Bulk Unsubscriber:** One-click unsubscribe and archive emails you never read.
+- **Cold Email Blocker:** Auto‑block cold emails.
+- **Email Analytics:** Track your activity and trends over time.
 
 Learn more in our [docs](https://docs.getinboxzero.com).
 
@@ -108,13 +110,13 @@ Set the environment variables in the newly created `.env`. You can see a list of
 
 The required environment variables:
 
-Secrets:
-
-- `NEXTAUTH_SECRET` -- can be any random string (try using `openssl rand -hex 32` for a quick secure random string)
+- `AUTH_SECRET` -- can be any random string (try using `openssl rand -hex 32` for a quick secure random string)
 - `EMAIL_ENCRYPT_SECRET` -- Secret key for encrypting OAuth tokens (try using `openssl rand -hex 32` for a secure key)
 - `EMAIL_ENCRYPT_SALT` -- Salt for encrypting OAuth tokens (try using `openssl rand -hex 16` for a secure salt)
 
-Redis:
+
+- `NEXT_PUBLIC_BASE_URL` -- The URL where your app is hosted (e.g., `http://localhost:3000` for local development or `https://yourdomain.com` for production).
+- `INTERNAL_API_KEY` -- A secret key for internal API calls (try using `openssl rand -hex 32` for a secure key)
 
 - `UPSTASH_REDIS_URL` -- Redis URL from Upstash. (can be empty if you are using Docker Compose)
 - `UPSTASH_REDIS_TOKEN` -- Redis token from Upstash. (or specify your own random string if you are using Docker Compose)
@@ -142,7 +144,9 @@ Create [new credentials](https://console.cloud.google.com/apis/credentials):
     2. In `Application Type`, Choose `Web application`
     3. Choose a name for your web client
     4. In Authorized JavaScript origins, add a URI and enter `http://localhost:3000`
-    5. In `Authorized redirect URIs` enter `http://localhost:3000/api/auth/callback/google`
+    5. In `Authorized redirect URIs` enter:
+      - `http://localhost:3000/api/auth/callback/google`
+      - `http://localhost:3000/api/google/linking/callback`
     6. Click `Create`.
     7. A popup will show up with the new credentials, including the Client ID and secret.
 3.  Update .env file:
@@ -185,7 +189,7 @@ Go to [Microsoft Azure Portal](https://portal.azure.com/). Create a new Azure Ac
    2. Under "Supported account types" select "Accounts in any organizational directory (Any Azure AD directory - Multitenant) and personal Microsoft accounts (e.g. Skype, Xbox)"
    3. Set the Redirect URI:
       - Platform: Web
-      - URL: `http://localhost:3000/api/auth/callback/microsoft-entra-id`
+      - URL: `http://localhost:3000/api/auth/callback/microsoft`
    4. Click "Register"
    5. In the "Manage" menu click "Authentication (Preview)"
    6. Add the Redirect URI: `http://localhost:3000/api/outlook/linking/callback`
@@ -353,7 +357,42 @@ The Google watch is necessary. Others are optional.
 
 [Here](https://vercel.com/guides/how-to-setup-cron-jobs-on-vercel#alternative-cron-providers) are some easy ways to run cron jobs. Upstash is a free, easy option. I could never get the Vercel `vercel.json`. Open to PRs if you find a fix for that.
 
-### Contributing to the project
+### Docker Build Instructions
+
+When building the Docker image, you **must** specify your `NEXT_PUBLIC_BASE_URL` as a build argument. This is because Next.js embeds `NEXT_PUBLIC_*` variables at build time, not runtime.
+
+### Building the Docker image
+
+```bash
+# For production with your custom domain
+docker build \
+  --build-arg NEXT_PUBLIC_BASE_URL="https://your-domain.com" \
+  -t inbox-zero \
+  -f docker/Dockerfile.prod .
+
+# For local development (default)
+docker build -t inbox-zero -f docker/Dockerfile.prod .
+```
+
+### Running the container
+
+After building, run the container with your runtime secrets:
+
+```bash
+docker run -p 3000:3000 \
+  -e DATABASE_URL="your-database-url" \
+  -e AUTH_SECRET="your-auth-secret" \
+  -e GOOGLE_CLIENT_ID="your-google-client-id" \
+  -e GOOGLE_CLIENT_SECRET="your-google-client-secret" \
+  # ... other runtime environment variables
+  inbox-zero
+```
+
+**Important:** If you need to change `NEXT_PUBLIC_BASE_URL`, you must rebuild the Docker image. It cannot be changed at runtime.
+
+For more detailed Docker build instructions and security considerations, see [docker/DOCKER_BUILD_GUIDE.md](docker/DOCKER_BUILD_GUIDE.md).
+
+## Contributing to the project
 
 You can view open tasks in our [GitHub Issues](https://github.com/elie222/inbox-zero/issues).
 Join our [Discord](https://www.getinboxzero.com/discord) to discuss tasks and check what's being worked on.

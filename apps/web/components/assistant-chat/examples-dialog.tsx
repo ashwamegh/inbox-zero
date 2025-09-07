@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import type { UseChatHelpers } from "@ai-sdk/react";
 import {
   Dialog,
   DialogContent,
@@ -17,7 +16,7 @@ import {
   PlusIcon,
   CheckCircle2Icon,
 } from "lucide-react";
-import { personas } from "@/app/(app)/[emailAccountId]/assistant/examples";
+import { getPersonas } from "@/app/(app)/[emailAccountId]/assistant/examples";
 import {
   convertLabelsToDisplay,
   convertMentionsToLabels,
@@ -26,9 +25,10 @@ import { Tooltip } from "@/components/Tooltip";
 import { ButtonList } from "@/components/ButtonList";
 import { parseAsStringEnum, useQueryState } from "nuqs";
 import { cn } from "@/utils";
+import { useAccount } from "@/providers/EmailAccountProvider";
 
 interface ExamplesDialogProps {
-  setInput: UseChatHelpers["setInput"];
+  setInput: (input: string) => void;
   children?: React.ReactNode;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -40,6 +40,8 @@ export function ExamplesDialog({
   open,
   onOpenChange,
 }: ExamplesDialogProps) {
+  const { provider } = useAccount();
+  const personas = getPersonas(provider);
   const [internalOpen, setInternalOpen] = useState(false);
   const [selectedExamples, setSelectedExamples] = useState<number[]>([]);
 

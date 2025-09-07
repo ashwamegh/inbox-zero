@@ -1,15 +1,9 @@
-// import { fileURLToPath } from "node:url";
 import { withSentryConfig } from "@sentry/nextjs";
 import { withAxiom } from "next-axiom";
 import nextMdx from "@next/mdx";
-// import { createJiti } from "jiti";
 import withSerwistInit from "@serwist/next";
 import { env } from "./env";
 import type { NextConfig } from "next";
-// const jiti = createJiti(fileURLToPath(import.meta.url));
-
-// Import env here to validate during build. Using jiti we can import .ts files :)
-// const { env } = await jiti.import("./env");
 
 const withMDX = nextMdx();
 
@@ -53,7 +47,7 @@ const nextConfig: NextConfig = {
         has: [
           {
             type: "cookie",
-            key: "__Secure-authjs.session-token",
+            key: "__Secure-better-auth.session_token",
           },
         ],
         permanent: false,
@@ -64,29 +58,7 @@ const nextConfig: NextConfig = {
         has: [
           {
             type: "cookie",
-            key: "__Secure-authjs.session-token.0",
-          },
-        ],
-        permanent: false,
-      },
-      {
-        source: "/",
-        destination: "/setup",
-        has: [
-          {
-            type: "cookie",
-            key: "__Secure-authjs.session-token.1",
-          },
-        ],
-        permanent: false,
-      },
-      {
-        source: "/",
-        destination: "/setup",
-        has: [
-          {
-            type: "cookie",
-            key: "__Secure-authjs.session-token.2",
+            key: "__Secure-better-auth.session-token.1",
           },
         ],
         permanent: false,
@@ -165,6 +137,11 @@ const nextConfig: NextConfig = {
         source: "/soc2",
         destination: "https://go.getinboxzero.com/soc2",
         permanent: true,
+      },
+      {
+        source: "/sales",
+        destination: "https://go.getinboxzero.com/sales",
+        permanent: false,
       },
     ];
   },
@@ -315,6 +292,19 @@ const useSentry =
 const exportConfig = useSentry
   ? withSentryConfig(mdxConfig, { ...sentryOptions, ...sentryConfig })
   : mdxConfig;
+
+// NEXTAUTH_SECRET is deprecated but kept as an option to not break the build. At least one must be set.
+if (!env.AUTH_SECRET && !env.NEXTAUTH_SECRET) {
+  throw new Error(
+    "Either AUTH_SECRET or NEXTAUTH_SECRET environment variable must be defined",
+  );
+}
+
+if (env.MICROSOFT_CLIENT_ID && !env.MICROSOFT_WEBHOOK_CLIENT_STATE) {
+  throw new Error(
+    "MICROSOFT_WEBHOOK_CLIENT_STATE environment variable must be defined",
+  );
+}
 
 const withSerwist = withSerwistInit({
   swSrc: "app/sw.ts",

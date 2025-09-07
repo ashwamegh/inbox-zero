@@ -11,17 +11,17 @@ import {
 } from "@/utils/redis/reply-tracker-analyzing";
 import { enableReplyTracker } from "@/utils/reply-tracker/enable";
 import { actionClient } from "@/utils/actions/safe-action";
-import { getGmailClientForEmail } from "@/utils/account";
 import { SafeError } from "@/utils/error";
-import { getEmailAccountWithAi } from "@/utils/user/get";
 import { prefixPath } from "@/utils/path";
+import { isGoogleProvider } from "@/utils/email/provider-types";
+import { getEmailAccountWithAi } from "@/utils/user/get";
 
 const logger = createScopedLogger("enableReplyTracker");
 
 export const enableReplyTrackerAction = actionClient
   .metadata({ name: "enableReplyTracker" })
-  .action(async ({ ctx: { emailAccountId } }) => {
-    await enableReplyTracker({ emailAccountId });
+  .action(async ({ ctx: { emailAccountId, provider } }) => {
+    await enableReplyTracker({ emailAccountId, provider });
 
     revalidatePath(prefixPath(emailAccountId, "/reply-zero"));
 
@@ -30,14 +30,20 @@ export const enableReplyTrackerAction = actionClient
 
 export const processPreviousSentEmailsAction = actionClient
   .metadata({ name: "processPreviousSentEmails" })
-  .action(async ({ ctx: { emailAccountId } }) => {
-    const emailAccount = await getEmailAccountWithAi({ emailAccountId });
-    if (!emailAccount) throw new SafeError("Email account not found");
+  .action(async ({ ctx: { emailAccountId, provider } }) => {
+    // Not enabled for non-google providers yet
+    if (!isGoogleProvider(provider)) return;
 
-    const gmail = await getGmailClientForEmail({ emailAccountId });
-    await processPreviousSentEmails({ gmail, emailAccount });
+    const emailAccountWithAi = await getEmailAccountWithAi({ emailAccountId });
 
-    return { success: true };
+    if (!emailAccountWithAi) {
+      logger.error("Email account not found", { emailAccountId });
+      throw new SafeError("Email account not found");
+    }
+
+    await processPreviousSentEmails({
+      emailAccount: emailAccountWithAi,
+    });
   });
 
 const resolveThreadTrackerSchema = z.object({

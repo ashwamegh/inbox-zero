@@ -18,6 +18,7 @@ import {
   TrashIcon,
 } from "lucide-react";
 import { type PostHog, usePostHog } from "posthog-js/react";
+import type { UserResponse } from "@/app/api/user/me/route";
 import { Button } from "@/components/ui/button";
 import { ButtonLoader } from "@/components/Loading";
 import { Tooltip } from "@/components/Tooltip";
@@ -52,6 +53,8 @@ import {
 import { LabelsSubMenu } from "@/components/LabelsSubMenu";
 import type { EmailLabel } from "@/providers/EmailProvider";
 import { useAccount } from "@/providers/EmailAccountProvider";
+import { isGoogleProvider } from "@/utils/email/provider-types";
+import { getEmailTerminology } from "@/utils/terminology";
 
 export function ActionCell<T extends Row>({
   item,
@@ -67,7 +70,7 @@ export function ActionCell<T extends Row>({
   item: T;
   hasUnsubscribeAccess: boolean;
   mutate: () => Promise<void>;
-  refetchPremium: () => Promise<any>;
+  refetchPremium: () => Promise<UserResponse | null | undefined>;
   onOpenNewsletter: (row: T) => void;
   selected: boolean;
   labels: EmailLabel[];
@@ -157,7 +160,7 @@ function UnsubscribeButton<T extends Row>({
   item: T;
   hasUnsubscribeAccess: boolean;
   mutate: () => Promise<void>;
-  refetchPremium: () => Promise<any>;
+  refetchPremium: () => Promise<UserResponse | null | undefined>;
   posthog: PostHog;
   emailAccountId: string;
 }) {
@@ -193,7 +196,13 @@ function UnsubscribeButton<T extends Row>({
           {hasUnsubscribeLink ? "Unsubscribe" : "Block"}
         </span>
         <span className="block xl:hidden">
-          <Tooltip content={hasUnsubscribeLink ? "Unsubscribe" : "Block"}>
+          <Tooltip
+            content={
+              hasUnsubscribeLink
+                ? "Unsubscribe from emails from this sender"
+                : "This sender does not have an unsubscribe link, but we can still block all emails from this sender and automatically archive them for you."
+            }
+          >
             <MailMinusIcon className="size-4" />
           </Tooltip>
         </span>
@@ -215,10 +224,12 @@ function AutoArchiveButton<T extends Row>({
   hasUnsubscribeAccess: boolean;
   mutate: () => Promise<void>;
   posthog: PostHog;
-  refetchPremium: () => Promise<any>;
+  refetchPremium: () => Promise<UserResponse | null | undefined>;
   labels: EmailLabel[];
   emailAccountId: string;
 }) {
+  const { provider } = useAccount();
+  const terminology = getEmailTerminology(provider);
   const {
     autoArchiveLoading,
     onAutoArchive,
@@ -299,7 +310,9 @@ function AutoArchiveButton<T extends Row>({
             </>
           )}
 
-          <DropdownMenuLabel>Skip Inbox and Label</DropdownMenuLabel>
+          <DropdownMenuLabel>
+            Skip Inbox and {terminology.label.action}
+          </DropdownMenuLabel>
           <DropdownMenuSeparator />
           {labels.map((label) => {
             return (
@@ -316,8 +329,9 @@ function AutoArchiveButton<T extends Row>({
           })}
           {!labels.length && (
             <DropdownMenuItem>
-              You do not have any labels. Create one in Gmail first to auto
-              label emails.
+              You do not have any {terminology.label.plural}. Create one in your
+              email client first to auto
+              {terminology.label.action} emails.
             </DropdownMenuItem>
           )}
         </DropdownMenuContent>
@@ -382,6 +396,7 @@ export function MoreDropdown<T extends Row>({
   posthog: PostHog;
 }) {
   const { provider } = useAccount();
+  const terminology = getEmailTerminology(provider);
   const { archiveAllLoading, onArchiveAll } = useArchiveAll({
     item,
     posthog,
@@ -408,7 +423,7 @@ export function MoreDropdown<T extends Row>({
             <span>View stats</span>
           </DropdownMenuItem>
         )}
-        {provider === "google" && (
+        {isGoogleProvider(provider) && (
           <DropdownMenuItem asChild>
             <Link
               href={getGmailSearchUrl(item.name, userEmail)}
@@ -433,7 +448,7 @@ export function MoreDropdown<T extends Row>({
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <TagIcon className="mr-2 size-4" />
-            <span>Label future emails</span>
+            <span>{terminology.label.action} future emails</span>
           </DropdownMenuSubTrigger>
           <DropdownMenuPortal>
             <LabelsSubMenu

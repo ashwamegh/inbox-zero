@@ -7,13 +7,14 @@ import { actionClient, adminActionClient } from "@/utils/actions/safe-action";
 import { getGmailAndAccessTokenForEmail } from "@/utils/account";
 import prisma from "@/utils/prisma";
 import { SafeError } from "@/utils/error";
+import { isGoogleProvider } from "@/utils/email/provider-types";
 
 const logger = createScopedLogger("actions/permissions");
 
 export const checkPermissionsAction = actionClient
   .metadata({ name: "checkPermissions" })
   .action(async ({ ctx: { emailAccountId, provider } }) => {
-    if (provider !== "google") {
+    if (!isGoogleProvider(provider)) {
       // TODO: add Outlook handling
       return { hasAllPermissions: true, hasRefreshToken: true };
     }
@@ -23,12 +24,15 @@ export const checkPermissionsAction = actionClient
         emailAccountId,
       });
 
-      if (!accessToken) throw new SafeError("No access token");
+      if (!tokens.refreshToken || !accessToken)
+        return { hasRefreshToken: true, hasAllPermissions: false };
 
       const { hasAllPermissions, error } = await handleGmailPermissionsCheck({
         accessToken,
+        refreshToken: tokens.refreshToken,
         emailAccountId,
       });
+
       if (error) throw new SafeError(error);
 
       if (!hasAllPermissions) return { hasAllPermissions: false };
@@ -42,7 +46,8 @@ export const checkPermissionsAction = actionClient
         emailAccountId,
         error,
       });
-      throw new SafeError("Failed to check permissions");
+      // throw new SafeError("Failed to check permissions");
+      return { hasRefreshToken: false, hasAllPermissions: false };
     }
   });
 
@@ -53,20 +58,23 @@ export const adminCheckPermissionsAction = adminActionClient
     try {
       const emailAccount = await prisma.emailAccount.findUnique({
         where: { email },
-        select: {
-          id: true,
-        },
+        select: { id: true, account: { select: { provider: true } } },
       });
       if (!emailAccount) throw new SafeError("Email account not found");
       const emailAccountId = emailAccount.id;
 
-      const { accessToken } = await getGmailAndAccessTokenForEmail({
+      if (!isGoogleProvider(emailAccount.account.provider)) {
+        throw new SafeError("Not supported for non-Google providers");
+      }
+
+      const { accessToken, tokens } = await getGmailAndAccessTokenForEmail({
         emailAccountId,
       });
       if (!accessToken) throw new SafeError("No Gmail access token");
 
       const { hasAllPermissions, error } = await handleGmailPermissionsCheck({
         accessToken,
+        refreshToken: tokens.refreshToken,
         emailAccountId,
       });
       if (error) throw new SafeError(error);

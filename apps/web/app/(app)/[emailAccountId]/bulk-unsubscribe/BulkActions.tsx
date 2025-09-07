@@ -22,6 +22,7 @@ export function BulkActions({
   mutate,
 }: {
   selected: Map<string, boolean>;
+  // biome-ignore lint/suspicious/noExplicitAny: lazy
   mutate: () => Promise<any>;
 }) {
   const posthog = usePostHog();
@@ -68,7 +69,7 @@ export function BulkActions({
   return (
     <>
       <PremiumTooltip showTooltip={!hasUnsubscribeAccess} openModal={openModal}>
-        <div className="flex items-center space-x-1.5">
+        <div className="flex items-center space-x-1.5 mt-2">
           <div>
             <Button
               size="sm"

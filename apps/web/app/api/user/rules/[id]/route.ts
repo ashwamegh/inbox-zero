@@ -38,6 +38,8 @@ async function getRule({
       cc: { value: action.cc },
       bcc: { value: action.bcc },
       url: { value: action.url },
+      folderName: { value: action.folderName },
+      folderId: { value: action.folderId },
     })),
     categoryFilters: rule.categoryFilters.map((category) => category.id),
     conditions: getConditions(rule),

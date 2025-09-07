@@ -17,8 +17,8 @@ type AuthOptions = {
 
 // Wrapper class to hold both the Microsoft Graph client and its access token
 export class OutlookClient {
-  private client: Client;
-  private accessToken: string;
+  private readonly client: Client;
+  private readonly accessToken: string;
 
   constructor(accessToken: string) {
     this.accessToken = accessToken;
@@ -87,7 +87,7 @@ export const getOutlookClientWithRefresh = async ({
   if (!refreshToken) throw new SafeError("No refresh token");
 
   // Check if token needs refresh
-  const expiryDate = expiresAt ? expiresAt * 1000 : null;
+  const expiryDate = expiresAt ? expiresAt : null;
   if (accessToken && expiryDate && expiryDate > Date.now()) {
     return createOutlookClient(accessToken);
   }
@@ -129,7 +129,7 @@ export const getOutlookClientWithRefresh = async ({
       },
       accountRefreshToken: refreshToken,
       emailAccountId,
-      provider: "microsoft-entra-id",
+      provider: "microsoft",
     });
 
     return createOutlookClient(tokens.access_token);

@@ -30,7 +30,7 @@ import { Checkbox } from "@/components/Checkbox";
 import { useToggleSelect } from "@/hooks/useToggleSelect";
 import { RulesSelect } from "@/app/(app)/[emailAccountId]/assistant/RulesSelect";
 import { useAccount } from "@/providers/EmailAccountProvider";
-import { useChat } from "@/components/assistant-chat/ChatContext";
+import { useChat } from "@/providers/ChatProvider";
 
 export function Pending() {
   const [page] = useQueryState("page", parseAsInteger.withDefault(1));
@@ -69,7 +69,7 @@ function PendingTable({
   totalPages: number;
   mutate: () => void;
 }) {
-  const { emailAccountId, userEmail } = useAccount();
+  const { emailAccountId, userEmail, provider } = useAccount();
   const { selected, isAllSelected, onToggleSelect, onToggleSelectAll } =
     useToggleSelect(pending);
 
@@ -191,7 +191,10 @@ function PendingTable({
                 />
               </TableCell>
               <TableCell>
-                <ActionItemsCell actionItems={p.actionItems} />
+                <ActionItemsCell
+                  actionItems={p.actionItems}
+                  provider={provider}
+                />
               </TableCell>
               <TableCell>
                 <ExecuteButtons id={p.id} message={p.message} mutate={mutate} />

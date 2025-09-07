@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { verifySignatureAppRouter } from "@upstash/qstash/dist/nextjs";
+import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 import { z } from "zod";
 import { withError } from "@/utils/middleware";
 import { getGmailClientWithRefresh } from "@/utils/gmail/client";
@@ -55,7 +55,7 @@ async function performGmailAction({
   const gmail = await getGmailClientWithRefresh({
     accessToken: account.account.access_token,
     refreshToken: account.account.refresh_token,
-    expiresAt: account.account.expires_at,
+    expiresAt: account.account.expires_at?.getTime() || null,
     emailAccountId,
   });
 

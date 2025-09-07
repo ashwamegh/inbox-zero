@@ -1,16 +1,13 @@
 import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
 import { useQueryState } from "nuqs";
 import type {
-  UpdateAboutSchema,
-  UpdateRuleConditionSchema,
-  UpdateRuleActionsSchema,
-  UpdateLearnedPatternsSchema,
-  AddToKnowledgeBaseSchema,
-  UpdateRuleConditionsResult,
-  UpdateRuleActionsResult,
+  UpdateAboutTool,
+  UpdateRuleConditionsTool,
+  UpdateRuleActionsTool,
+  UpdateLearnedPatternsTool,
+  AddToKnowledgeBaseTool,
+  CreateRuleTool,
 } from "@/utils/ai/assistant/chat";
-import type { CreateRuleSchema } from "@/utils/ai/rule/create-rule-schema";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { EyeIcon, SparklesIcon, TrashIcon, FileDiffIcon } from "lucide-react";
@@ -21,77 +18,21 @@ import { useAccount } from "@/providers/EmailAccountProvider";
 import { ExpandableText } from "@/components/ExpandableText";
 import { RuleDialog } from "@/app/(app)/[emailAccountId]/assistant/RuleDialog";
 import { useDialogState } from "@/hooks/useDialogState";
+import { getEmailTerminology } from "@/utils/terminology";
 
-export function ToolCard({
-  toolName,
-  args,
-  ruleId,
-  result,
-}: {
-  toolName: string;
-  args: any;
-  ruleId?: string;
-  result?: any;
-}) {
-  switch (toolName) {
-    case "get_user_rules_and_settings":
-      return <BasicInfo text="Read rules and settings" />;
-    case "get_learned_patterns":
-      return <BasicInfo text={`Read learned patterns for ${args.ruleName}`} />;
-    case "create_rule":
-      return <CreatedRule args={args as CreateRuleSchema} ruleId={ruleId} />;
-    case "update_rule_conditions": {
-      const conditionsResult = result as UpdateRuleConditionsResult;
-      return (
-        <UpdatedRuleConditions
-          args={args as UpdateRuleConditionSchema}
-          ruleId={ruleId || ""}
-          originalConditions={conditionsResult?.originalConditions}
-          updatedConditions={conditionsResult?.updatedConditions}
-        />
-      );
-    }
-    case "update_rule_actions": {
-      const actionsResult = result as UpdateRuleActionsResult;
-      return (
-        <UpdatedRuleActions
-          args={args as UpdateRuleActionsSchema}
-          ruleId={ruleId || ""}
-          originalActions={actionsResult?.originalActions}
-          updatedActions={actionsResult?.updatedActions}
-        />
-      );
-    }
-    case "update_learned_patterns": {
-      return (
-        <UpdatedLearnedPatterns
-          args={args as UpdateLearnedPatternsSchema}
-          ruleId={ruleId || ""}
-        />
-      );
-    }
-    case "update_about":
-      return <UpdateAbout args={args as UpdateAboutSchema} />;
-    case "add_to_knowledge_base":
-      return <AddToKnowledgeBase args={args as AddToKnowledgeBaseSchema} />;
-    default:
-      return null;
-  }
-}
-
-function BasicInfo({ text }: { text: string }) {
+export function BasicToolInfo({ text }: { text: string }) {
   return (
-    <Card className="p-2">
+    <ToolCard>
       <div className="text-sm">{text}</div>
-    </Card>
+    </ToolCard>
   );
 }
 
-function CreatedRule({
+export function CreatedRuleToolCard({
   args,
   ruleId,
 }: {
-  args: CreateRuleSchema;
+  args: CreateRuleTool["input"];
   ruleId?: string;
 }) {
   const conditionsArray = [
@@ -100,12 +41,11 @@ function CreatedRule({
   ].filter(Boolean);
 
   return (
-    <Card className="space-y-3 p-4">
+    <ToolCard>
       <ToolCardHeader
         title={
           <>
-            <strong>{ruleId ? "New rule created:" : "Creating rule:"}</strong>{" "}
-            {args.name}
+            {ruleId ? "New rule created:" : "Creating rule:"} {args.name}
           </>
         }
         actions={ruleId && <RuleActions ruleId={ruleId} />}
@@ -156,20 +96,20 @@ function CreatedRule({
           ))}
         </div>
       </div>
-    </Card>
+    </ToolCard>
   );
 }
 
-function UpdatedRuleConditions({
+export function UpdatedRuleConditions({
   args,
   ruleId,
   originalConditions,
   updatedConditions,
 }: {
-  args: UpdateRuleConditionSchema;
+  args: UpdateRuleConditionsTool["input"];
   ruleId: string;
-  originalConditions?: UpdateRuleConditionsResult["originalConditions"];
-  updatedConditions?: UpdateRuleConditionsResult["updatedConditions"];
+  originalConditions?: UpdateRuleConditionsTool["output"]["originalConditions"];
+  updatedConditions?: UpdateRuleConditionsTool["output"]["updatedConditions"];
 }) {
   const [showChanges, setShowChanges] = useState(false);
 
@@ -191,7 +131,7 @@ function UpdatedRuleConditions({
     originalConditions.aiInstructions !== updatedConditions.aiInstructions;
 
   return (
-    <Card className="space-y-3 p-4">
+    <ToolCard>
       <ToolCardHeader
         title={<>Updated Conditions</>}
         actions={
@@ -245,21 +185,22 @@ function UpdatedRuleConditions({
           updatedText={updatedConditions?.aiInstructions || undefined}
         />
       )}
-    </Card>
+    </ToolCard>
   );
 }
 
-function UpdatedRuleActions({
+export function UpdatedRuleActions({
   args,
   ruleId,
   originalActions,
   updatedActions,
 }: {
-  args: UpdateRuleActionsSchema;
+  args: UpdateRuleActionsTool["input"];
   ruleId: string;
-  originalActions?: UpdateRuleActionsResult["originalActions"];
-  updatedActions?: UpdateRuleActionsResult["updatedActions"];
+  originalActions?: UpdateRuleActionsTool["output"]["originalActions"];
+  updatedActions?: UpdateRuleActionsTool["output"]["updatedActions"];
 }) {
+  const { provider } = useAccount();
   const [showChanges, setShowChanges] = useState(false);
 
   // Check if actions have changed by comparing serialized versions
@@ -268,11 +209,18 @@ function UpdatedRuleActions({
     updatedActions &&
     JSON.stringify(originalActions) !== JSON.stringify(updatedActions);
 
-  const formatActions = (actions: any[]) => {
+  const formatActions = <
+    T extends { type: string; fields: Record<string, string | null> },
+  >(
+    actions: T[],
+  ) => {
     return actions
       .map((action) => {
         const parts = [`Type: ${action.type}`];
-        if (action.fields?.label) parts.push(`Label: ${action.fields.label}`);
+        if (action.fields?.label)
+          parts.push(
+            `${getEmailTerminology(provider).label.action}: ${action.fields.label}`,
+          );
         if (action.fields?.content)
           parts.push(`Content: ${action.fields.content}`);
         if (action.fields?.to) parts.push(`To: ${action.fields.to}`);
@@ -290,7 +238,7 @@ function UpdatedRuleActions({
   };
 
   return (
-    <Card className="space-y-3 p-4">
+    <ToolCard>
       <ToolCardHeader
         title={<>Updated Actions</>}
         actions={
@@ -329,19 +277,19 @@ function UpdatedRuleActions({
           updatedText={formatActions(updatedActions || [])}
         />
       )}
-    </Card>
+    </ToolCard>
   );
 }
 
-function UpdatedLearnedPatterns({
+export function UpdatedLearnedPatterns({
   args,
   ruleId,
 }: {
-  args: UpdateLearnedPatternsSchema;
+  args: UpdateLearnedPatternsTool["input"];
   ruleId: string;
 }) {
   return (
-    <Card className="space-y-3 p-4">
+    <ToolCard>
       <ToolCardHeader
         title={<>Updated Learned Patterns</>}
         actions={<RuleActions ruleId={ruleId} />}
@@ -385,24 +333,28 @@ function UpdatedLearnedPatterns({
           );
         })}
       </div>
-    </Card>
+    </ToolCard>
   );
 }
 
-function UpdateAbout({ args }: { args: UpdateAboutSchema }) {
+export function UpdateAbout({ args }: { args: UpdateAboutTool["input"] }) {
   return (
-    <Card className="space-y-3 p-4">
+    <ToolCard>
       <ToolCardHeader title={<>Updated About Information</>} />
       <div className="rounded-md bg-muted p-3 text-sm">{args.about}</div>
-    </Card>
+    </ToolCard>
   );
 }
 
-function AddToKnowledgeBase({ args }: { args: AddToKnowledgeBaseSchema }) {
+export function AddToKnowledgeBase({
+  args,
+}: {
+  args: AddToKnowledgeBaseTool["input"];
+}) {
   const [_, setTab] = useQueryState("tab");
 
   return (
-    <Card className="space-y-3 p-4">
+    <ToolCard>
       <ToolCardHeader
         title={<>Added to Knowledge Base</>}
         actions={
@@ -415,7 +367,7 @@ function AddToKnowledgeBase({ args }: { args: AddToKnowledgeBaseSchema }) {
         <div className="font-medium">{args.title}</div>
         <ExpandableText text={args.content} />
       </div>
-    </Card>
+    </ToolCard>
   );
 }
 
@@ -425,13 +377,13 @@ function RuleActions({ ruleId }: { ruleId: string }) {
 
   return (
     <>
-      {/* Don't use tooltips as they force scroll to bottom. Real fix is to adjust useScrollToBottom hook to not do that */}
+      {/* Don't use tooltips as they force scroll to bottom */}
       <div className="flex items-center gap-1">
         <Button
           variant="ghost"
           size="sm"
           className="h-8 w-8 p-0"
-          onClick={() => ruleDialog.open({ ruleId })}
+          onClick={() => ruleDialog.onOpen({ ruleId })}
         >
           <EyeIcon className="size-4" />
         </Button>
@@ -466,11 +418,15 @@ function RuleActions({ ruleId }: { ruleId: string }) {
       <RuleDialog
         ruleId={ruleDialog.data?.ruleId}
         isOpen={ruleDialog.isOpen}
-        onClose={ruleDialog.close}
+        onClose={ruleDialog.onClose}
         editMode={false}
       />
     </>
   );
+}
+
+function ToolCard({ children }: { children: React.ReactNode }) {
+  return <Card className="mb-4 space-y-3 p-4">{children}</Card>;
 }
 
 function ToolCardHeader({
@@ -520,38 +476,28 @@ function CollapsibleDiff({
   originalText?: string;
   updatedText?: string;
 }) {
+  if (!showChanges) return null;
+
   return (
-    <AnimatePresence>
-      {showChanges && (
-        <motion.div
-          initial={{ height: 0, opacity: 0 }}
-          animate={{ height: "auto", opacity: 1 }}
-          exit={{ height: 0, opacity: 0 }}
-          transition={{ duration: 0.2, ease: "easeInOut" }}
-          className="overflow-hidden"
-        >
-          <div className="space-y-2">
-            <div className="text-xs font-medium text-muted-foreground">
-              {title}
+    <div className="overflow-hidden">
+      <div className="space-y-2">
+        <div className="text-xs font-medium text-muted-foreground">{title}</div>
+        <div className="rounded-md border bg-muted/30 p-3 font-mono text-sm overflow-auto max-h-96">
+          {originalText && (
+            <div className="mb-2 rounded bg-red-50 px-2 py-1 text-red-800 dark:bg-red-950/30 dark:text-red-200 whitespace-pre-wrap break-words overflow-auto max-h-48">
+              <span className="mr-2 text-red-500">-</span>
+              {originalText}
             </div>
-            <div className="rounded-md border bg-muted/30 p-3 font-mono text-sm">
-              {originalText && (
-                <div className="mb-2 rounded bg-red-50 px-2 py-1 text-red-800 dark:bg-red-950/30 dark:text-red-200">
-                  <span className="mr-2 text-red-500">-</span>
-                  {originalText}
-                </div>
-              )}
-              {updatedText && (
-                <div className="rounded bg-green-50 px-2 py-1 text-green-800 dark:bg-green-950/30 dark:text-green-200">
-                  <span className="mr-2 text-green-500">+</span>
-                  {updatedText}
-                </div>
-              )}
+          )}
+          {updatedText && (
+            <div className="rounded bg-green-50 px-2 py-1 text-green-800 dark:bg-green-950/30 dark:text-green-200 whitespace-pre-wrap break-words overflow-auto max-h-48">
+              <span className="mr-2 text-green-500">+</span>
+              {updatedText}
             </div>
-          </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -569,7 +515,7 @@ function renderActionFields(fields: {
   const fieldEntries = [];
 
   // Only add fields that have actual values
-  if (fields.label) fieldEntries.push([fields.label]);
+  if (fields.label) fieldEntries.push(["Label", fields.label]);
   if (fields.subject) fieldEntries.push(["Subject", fields.subject]);
   if (fields.to) fieldEntries.push(["To", fields.to]);
   if (fields.cc) fieldEntries.push(["CC", fields.cc]);
