@@ -1,4 +1,5 @@
 import { isDefined } from "@/utils/types";
+import { getGoogleGmailBatchUrl } from "@/utils/google/oauth";
 import { createScopedLogger } from "@/utils/logger";
 
 const logger = createScopedLogger("gmail/batch");
@@ -25,7 +26,7 @@ export async function getBatch(
   }
   batchRequestBody += "--batch_boundary--";
 
-  const res = await fetch("https://gmail.googleapis.com/batch/gmail/v1", {
+  const res = await fetch(getGoogleGmailBatchUrl(), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -68,7 +69,7 @@ function parseBatchResponse(batchResponse: string, contentType: string | null) {
     if (jsonStartIndex === -1) return; // Skip if no JSON data found
 
     // Extract the JSON string
-    const jsonResponse = part.substring(jsonStartIndex);
+    const jsonResponse = part.slice(jsonStartIndex);
 
     // Parse the JSON string
     try {

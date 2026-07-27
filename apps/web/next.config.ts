@@ -1,16 +1,78 @@
 import { withSentryConfig } from "@sentry/nextjs";
 import { withAxiom } from "next-axiom";
 import nextMdx from "@next/mdx";
-import withSerwistInit from "@serwist/next";
+import { realpathSync } from "node:fs";
+import path from "node:path";
 import { env } from "./env";
 import type { NextConfig } from "next";
 
-const withMDX = nextMdx();
+const withMDX = nextMdx({
+  options: {
+    remarkPlugins: [[require.resolve("remark-gfm")]],
+  },
+});
+
+const isDevelopment = process.env.NODE_ENV === "development";
+const isProductionBuild = process.env.NODE_ENV === "production";
+const repoRoot = path.resolve(import.meta.dirname, "../..");
+const nextPackageRoot = path.dirname(
+  realpathSync(require.resolve("next/package.json")),
+);
+const turbopackRoot = commonAncestorPath(repoRoot, nextPackageRoot);
+const zodV4CorePath = path.join(
+  path.dirname(require.resolve("zod/package.json")),
+  "v4/core/index.js",
+);
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  serverExternalPackages: ["@sentry/nextjs", "@sentry/node"],
+  allowedDevOrigins: ["127.0.0.1"],
+  logging: {
+    browserToTerminal: true,
+  },
+  experimental:
+    isDevelopment || isProductionBuild
+      ? {
+          ...(isDevelopment
+            ? {
+                // This app has a large route graph. Avoid front-loading all
+                // route modules into memory at startup during local
+                // development.
+                preloadEntriesOnStart: false,
+              }
+            : {}),
+          ...(isProductionBuild
+            ? {
+                // Keep the static build from fanning out too many workers at
+                // once. This trades a bit of build time for lower peak RAM.
+                staticGenerationMaxConcurrency: 4,
+                staticGenerationMinPagesPerWorker: 100,
+              }
+            : {}),
+        }
+      : undefined,
+  onDemandEntries: isDevelopment
+    ? {
+        maxInactiveAge: 25 * 1000,
+        pagesBufferLength: 2,
+      }
+    : undefined,
+  output: process.env.DOCKER_BUILD === "true" ? "standalone" : undefined,
+  // Skip TypeScript checking during E2E CI builds to save memory
+  typescript: {
+    ignoreBuildErrors: process.env.SKIP_TYPE_CHECK === "true",
+  },
+  serverExternalPackages: [
+    "@chat-adapter/teams",
+    "@sentry/nextjs",
+    "@sentry/node",
+    "@vercel/queue",
+    "bullmq",
+    "mammoth",
+    "unpdf",
+  ],
   turbopack: {
+    root: turbopackRoot,
     rules: {
       "*.svg": {
         loaders: ["@svgr/webpack"],
@@ -18,9 +80,28 @@ const nextConfig: NextConfig = {
       },
     },
   },
+  webpack: (config) => {
+    config.resolve ??= {};
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      "zod/v4/core": zodV4CorePath,
+    };
+    return config;
+  },
   pageExtensions: ["js", "jsx", "mdx", "ts", "tsx"],
   images: {
+    deviceSizes: [
+      640, 750, 828, 1080, 1200, 1280, 1440, 1920, 2048, 2560, 3840,
+    ],
     remotePatterns: [
+      {
+        protocol: "https",
+        hostname: "img.youtube.com",
+      },
+      {
+        protocol: "https",
+        hostname: "image.mux.com",
+      },
       {
         protocol: "https",
         hostname: "ph-avatars.imgix.net",
@@ -36,6 +117,14 @@ const nextConfig: NextConfig = {
       {
         protocol: "https",
         hostname: "images.getinboxzero.com",
+      },
+      {
+        protocol: "https",
+        hostname: "t1.gstatic.com",
+      },
+      {
+        protocol: "https",
+        hostname: "cdn.outrank.so",
       },
     ],
   },
@@ -69,6 +158,11 @@ const nextConfig: NextConfig = {
         permanent: true,
       },
       {
+        source: "/roadmap",
+        destination: "https://go.getinboxzero.com/feature-requests",
+        permanent: true,
+      },
+      {
         source: "/feedback",
         destination: "https://go.getinboxzero.com/feedback",
         permanent: true,
@@ -89,6 +183,18 @@ const nextConfig: NextConfig = {
         permanent: true,
       },
       {
+        source: "/ios",
+        destination:
+          "https://apps.apple.com/app/inbox-zero-ai-email/id6759736561",
+        permanent: false,
+      },
+      {
+        source: "/android",
+        destination:
+          "https://play.google.com/store/apps/details?id=com.getinboxzero.app",
+        permanent: false,
+      },
+      {
         source: "/discord",
         destination: "https://go.getinboxzero.com/discord",
         permanent: true,
@@ -96,6 +202,11 @@ const nextConfig: NextConfig = {
       {
         source: "/linkedin",
         destination: "https://go.getinboxzero.com/linkedin",
+        permanent: true,
+      },
+      {
+        source: "/contact",
+        destination: "/support",
         permanent: true,
       },
       {
@@ -119,6 +230,21 @@ const nextConfig: NextConfig = {
         permanent: false,
       },
       {
+        source: "/docs",
+        destination: "https://docs.getinboxzero.com",
+        permanent: true,
+      },
+      {
+        source: "/docs/:path*",
+        destination: "https://docs.getinboxzero.com/:path*",
+        permanent: true,
+      },
+      {
+        source: "/api-reference/cli",
+        destination: "https://docs.getinboxzero.com",
+        permanent: true,
+      },
+      {
         source: "/request-access",
         destination: "/early-access",
         permanent: true,
@@ -127,6 +253,11 @@ const nextConfig: NextConfig = {
         source: "/reply-tracker",
         destination: "/reply-zero",
         permanent: false,
+      },
+      {
+        source: "/new-senders",
+        destination: "/",
+        permanent: true,
       },
       {
         source: "/game",
@@ -167,54 +298,59 @@ const nextConfig: NextConfig = {
   },
   // Security headers: https://nextjs.org/docs/app/building-your-application/configuring/progressive-web-apps#8-securing-your-application
   async headers() {
+    const securityHeaders = [
+      {
+        key: "X-Frame-Options",
+        value: "DENY",
+      },
+      {
+        key: "X-XSS-Protection",
+        value: "1; mode=block",
+      },
+      {
+        key: "X-Content-Type-Options",
+        value: "nosniff",
+      },
+      {
+        key: "Referrer-Policy",
+        value: "strict-origin-when-cross-origin",
+      },
+      {
+        key: "Content-Security-Policy",
+        value: [
+          "default-src 'self'",
+          // Next.js needs these
+          "script-src 'self' 'unsafe-inline' 'unsafe-eval' https:",
+          // Needed for Tailwind/Shadcn
+          "style-src 'self' 'unsafe-inline' https:",
+          // Add this line to allow data: fonts
+          "font-src 'self' data: https:",
+          // For images including avatars and Mux thumbnails
+          "img-src 'self' data: https: blob: https://image.mux.com https://*.litix.io",
+          // For Mux video and audio content
+          "media-src 'self' blob: https://*.mux.com",
+          // If you use web workers or service workers
+          "worker-src 'self' blob:",
+          // For API calls, SWR, external services, and Mux
+          "connect-src 'self' https: wss: https://*.mux.com https://*.litix.io",
+          // iframes for Mux player
+          "frame-src 'self' https:",
+          // Prevent embedding in iframes
+          "frame-ancestors 'none'",
+        ].join("; "),
+      },
+      {
+        key: "Strict-Transport-Security",
+        value: "max-age=31536000",
+      },
+    ];
+
     return [
       {
-        source: "/(.*)",
+        // Apply all security headers + static CORS to non-auth routes
+        source: "/((?!api/auth).*)",
         headers: [
-          {
-            key: "X-Frame-Options",
-            value: "DENY",
-          },
-          {
-            key: "X-XSS-Protection",
-            value: "1; mode=block",
-          },
-          {
-            key: "X-Content-Type-Options",
-            value: "nosniff",
-          },
-          {
-            key: "Referrer-Policy",
-            value: "strict-origin-when-cross-origin",
-          },
-          {
-            key: "Content-Security-Policy",
-            value: [
-              "default-src 'self'",
-              // Next.js needs these
-              "script-src 'self' 'unsafe-inline' 'unsafe-eval' https:",
-              // Needed for Tailwind/Shadcn
-              "style-src 'self' 'unsafe-inline' https:",
-              // Add this line to allow data: fonts
-              "font-src 'self' data: https:",
-              // For images including avatars and Mux thumbnails
-              "img-src 'self' data: https: blob: https://image.mux.com https://*.litix.io",
-              // For Mux video and audio content
-              "media-src 'self' blob: https://*.mux.com",
-              // If you use web workers or service workers
-              "worker-src 'self' blob:",
-              // For API calls, SWR, external services, and Mux
-              "connect-src 'self' https: wss: https://*.mux.com https://*.litix.io",
-              // iframes for Mux player
-              "frame-src 'self' https:",
-              // Prevent embedding in iframes
-              "frame-ancestors 'none'",
-            ].join("; "),
-          },
-          {
-            key: "Strict-Transport-Security",
-            value: "max-age=31536000",
-          },
+          ...securityHeaders,
           {
             key: "Access-Control-Allow-Origin",
             value: env.NEXT_PUBLIC_BASE_URL,
@@ -224,6 +360,11 @@ const nextConfig: NextConfig = {
             value: "GET, POST, PUT, DELETE, OPTIONS",
           },
         ],
+      },
+      {
+        // Auth routes: security headers only, CORS handled by better-auth based on trustedOrigins
+        source: "/api/auth/:path*",
+        headers: securityHeaders,
       },
       {
         source: "/sw.js",
@@ -259,12 +400,6 @@ const sentryOptions = {
 const sentryConfig = {
   // For all available options, see:
   // https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/
-
-  // Upload a larger set of source maps for prettier stack traces (increases build time)
-  widenClientFileUpload: true,
-
-  // Transpiles SDK to be compatible with IE11 (increases bundle size)
-  transpileClientSDK: true,
 
   // Routes browser requests to Sentry through a Next.js rewrite to circumvent ad-blockers (increases server load)
   tunnelRoute: "/monitoring",
@@ -306,11 +441,23 @@ if (env.MICROSOFT_CLIENT_ID && !env.MICROSOFT_WEBHOOK_CLIENT_STATE) {
   );
 }
 
-const withSerwist = withSerwistInit({
-  swSrc: "app/sw.ts",
-  swDest: "public/sw.js",
-  disable: env.NODE_ENV !== "production",
-  maximumFileSizeToCacheInBytes: 3 * 1024 * 1024, // 3MB
-});
+// The service worker is built separately by `serwist build` (serwist.config.mjs)
+// because the @serwist/next webpack plugin doesn't support Turbopack.
 
-export default withAxiom(withSerwist(exportConfig));
+export default withAxiom(exportConfig);
+
+function commonAncestorPath(firstPath: string, secondPath: string) {
+  const [firstParts, secondParts] = [firstPath, secondPath].map((value) =>
+    path.resolve(value).split(path.sep),
+  );
+  const commonParts: string[] = [];
+
+  for (let index = 0; index < firstParts.length; index += 1) {
+    if (firstParts[index] !== secondParts[index]) break;
+    commonParts.push(firstParts[index]);
+  }
+
+  return commonParts.length === 1 && commonParts[0] === ""
+    ? path.sep
+    : commonParts.join(path.sep);
+}

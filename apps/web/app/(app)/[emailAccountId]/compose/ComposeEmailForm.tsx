@@ -29,8 +29,9 @@ import { useModifierKey } from "@/hooks/useModifierKey";
 import { useAccount } from "@/providers/EmailAccountProvider";
 
 export type ReplyingToEmail = {
-  threadId: string;
-  headerMessageId: string;
+  threadId?: string;
+  headerMessageId?: string;
+  messageId?: string;
   references?: string;
   subject: string;
   to: string;
@@ -65,7 +66,7 @@ export const ComposeEmailForm = ({
     setValue,
   } = useForm<SendEmailBody>({
     defaultValues: {
-      replyToEmail: replyingToEmail,
+      replyToEmail: getReplyToEmailPayload(replyingToEmail),
       subject: replyingToEmail?.subject,
       to: replyingToEmail?.to,
       cc: replyingToEmail?.cc,
@@ -77,6 +78,7 @@ export const ComposeEmailForm = ({
     async (data) => {
       const enrichedData = {
         ...data,
+        replyToEmail: getReplyToEmailPayload(data.replyToEmail),
         messageHtml: showFullContent
           ? data.messageHtml || ""
           : `${data.messageHtml || ""}<br>${replyingToEmail?.quotedContentHtml || ""}`,
@@ -266,7 +268,7 @@ export const ComposeEmailForm = ({
                               key={person.emailAddress}
                               value={person.emailAddress}
                             >
-                              {({ selected }) => (
+                              {({ selected }: { selected: boolean }) => (
                                 <div className="my-2 flex items-center">
                                   {selected ? (
                                     <div className="flex h-12 w-12 items-center justify-center rounded-full">
@@ -342,9 +344,7 @@ export const ComposeEmailForm = ({
         <Button type="submit" disabled={isSubmitting}>
           {isSubmitting && <ButtonLoader />}
           Send
-          <div className="dark ml-2">
-            <CommandShortcut>{symbol}+Enter</CommandShortcut>
-          </div>
+          <CommandShortcut className="ml-2">{symbol}+Enter</CommandShortcut>
         </Button>
 
         {onDiscard && (
@@ -363,3 +363,28 @@ export const ComposeEmailForm = ({
     </form>
   );
 };
+
+function getReplyToEmailPayload(
+  replyingToEmail:
+    | Pick<
+        ReplyingToEmail,
+        "threadId" | "headerMessageId" | "references" | "messageId"
+      >
+    | undefined,
+): SendEmailBody["replyToEmail"] | undefined {
+  const threadId = replyingToEmail?.threadId?.trim();
+  const headerMessageId = replyingToEmail?.headerMessageId?.trim();
+
+  if (!threadId || !headerMessageId) return;
+
+  return {
+    threadId,
+    headerMessageId,
+    ...(replyingToEmail?.references
+      ? { references: replyingToEmail.references }
+      : {}),
+    ...(replyingToEmail?.messageId
+      ? { messageId: replyingToEmail.messageId }
+      : {}),
+  };
+}

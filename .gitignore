@@ -8,6 +8,8 @@ node_modules
 
 # testing
 /coverage
+/apps/web/test-results/
+/apps/web/playwright-report/
 
 # next.js
 /.next/
@@ -19,19 +21,23 @@ node_modules
 # misc
 .DS_Store
 *.pem
+.conductor/settings.local.toml
 
 # debug
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# local env files
-.env*.local
-.env
-.env.test
+# local env files - ignore ALL .env files except .env.example
+.env*
+!.env.example
+/json.env
 
 # vercel
 .vercel
+.wrangler
+.dev.vars
+.dev.vars.*
 
 # typescript
 *.tsbuildinfo
@@ -76,3 +82,38 @@ docker-compose.override.yml
 
 # cli logs
 logs
+
+coverage
+
+# Copilot local workspace state
+copilot/.workspace
+copilot/environments/**/manifest.yml
+
+/apps/web/app/(app)/\[emailAccountId\]/demo/*
+
+# Cursor
+.cursor/plans/
+
+# AI SDK devtools
+.devtools/
+
+# browser QA flow results
+qa/browser-flows/results/*
+!qa/browser-flows/results/README.md
+
+# local skills
+.claude/skills/local/
+.agents/skills/local/
+
+# local claude hooks (personal nested repo)
+.claude/local/
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+
+# eval reports
+eval-results/
+
+.agent-worktrees/
+.context/
+.deepsec/
+.tmp/

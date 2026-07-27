@@ -2,7 +2,6 @@
 
 import { useCallback, useState, useRef, useMemo } from "react";
 import useSWR from "swr";
-import useSWRInfinite from "swr/infinite";
 import { parseAsBoolean, useQueryState } from "nuqs";
 import PQueue from "p-queue";
 import {
@@ -16,31 +15,43 @@ import {
 import { Button } from "@/components/ui/button";
 import { toastError } from "@/components/Toast";
 import { LoadingContent } from "@/components/LoadingContent";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { MessagesResponse } from "@/app/api/messages/route";
 import { EmailMessageCell } from "@/components/EmailMessageCell";
 import { runRulesAction } from "@/utils/actions/ai-rule";
-import type { RulesResponse } from "@/app/api/user/rules/route";
 import { Table, TableBody, TableRow, TableCell } from "@/components/ui/table";
 import { Card } from "@/components/ui/card";
 import type { RunRulesResult } from "@/utils/ai/choose-rule/run-rules";
 import { SearchForm } from "@/components/SearchForm";
-import { Badge } from "@/components/Badge";
 import type { BatchExecutedRulesResponse } from "@/app/api/user/executed-rules/batch/route";
-import {
-  isAIRule,
-  isCategoryRule,
-  isGroupRule,
-  isStaticRule,
-} from "@/utils/condition";
-import { BulkRunRules } from "@/app/(app)/[emailAccountId]/assistant/BulkRunRules";
+import { isAIRule, isGroupRule, isStaticRule } from "@/utils/condition";
 import { cn } from "@/utils";
 import { TestCustomEmailForm } from "@/app/(app)/[emailAccountId]/assistant/TestCustomEmailForm";
-import { ProcessResultDisplay } from "@/app/(app)/[emailAccountId]/assistant/ProcessResultDisplay";
+import { ResultsDisplay } from "@/app/(app)/[emailAccountId]/assistant/ResultDisplay";
 import { useAccount } from "@/providers/EmailAccountProvider";
 import { FixWithChat } from "@/app/(app)/[emailAccountId]/assistant/FixWithChat";
 import { useChat } from "@/providers/ChatProvider";
+import { MutedText } from "@/components/Typography";
+import { createClientLogger } from "@/utils/logger-client";
+import { isDefined } from "@/utils/types";
+import {
+  getSelectionMetadataTraceDetails,
+  summarizeSelectionMetadata,
+} from "@/utils/ai/choose-rule/selection-metadata-summary";
+import { useRules } from "@/hooks/useRules";
+import { useInfiniteMessages } from "@/hooks/useMessages";
+import { usePremium } from "@/hooks/usePremium";
+import { hasTierAccess } from "@/utils/premium";
+import {
+  RERUN_MINIMUM_TIER,
+  RERUN_UPGRADE_MESSAGE,
+} from "@/utils/premium/rerun";
+import { Tooltip } from "@/components/Tooltip";
 
 type Message = MessagesResponse["messages"][number];
+
+const logger = createClientLogger("automation-test");
 
 export function ProcessRulesContent({ testMode }: { testMode: boolean }) {
   const [searchQuery, setSearchQuery] = useQueryState("search");
@@ -50,32 +61,7 @@ export function ProcessRulesContent({ testMode }: { testMode: boolean }) {
   );
 
   const { data, isLoading, isValidating, error, setSize, mutate, size } =
-    useSWRInfinite<MessagesResponse>(
-      (index, previousPageData) => {
-        // Always return the URL for the first page
-        if (index === 0) {
-          const params = new URLSearchParams();
-          if (searchQuery) params.set("q", searchQuery);
-          const paramsString = params.toString();
-
-          return `/api/messages${paramsString ? `?${paramsString}` : ""}`;
-        }
-
-        // For subsequent pages, check if we have a next page token
-        const pageToken = previousPageData?.nextPageToken;
-        if (!pageToken) return null;
-
-        const params = new URLSearchParams();
-        if (searchQuery) params.set("q", searchQuery);
-        params.set("pageToken", pageToken);
-        const paramsString = params.toString();
-
-        return `/api/messages${paramsString ? `?${paramsString}` : ""}`;
-      },
-      {
-        revalidateFirstPage: false,
-      },
-    );
+    useInfiniteMessages({ searchQuery });
 
   const onLoadMore = async () => {
     const nextSize = size + 1;
@@ -98,8 +84,15 @@ export function ProcessRulesContent({ testMode }: { testMode: boolean }) {
     });
   }, [data]);
 
-  const { data: rules } = useSWR<RulesResponse>("/api/user/rules");
+  const { data: rules } = useRules();
   const { emailAccountId, userEmail } = useAccount();
+  const { tier } = usePremium();
+
+  // Re-applying rules costs a fresh LLM call, so it's gated. Re-testing isn't:
+  // test runs never overwrite a stored result.
+  const canRerun =
+    testMode ||
+    hasTierAccess({ tier: tier || null, minimumTier: RERUN_MINIMUM_TIER });
 
   // Fetch existing executed rules for current messages
   const messageIdsToFetch = useMemo(
@@ -115,37 +108,37 @@ export function ProcessRulesContent({ testMode }: { testMode: boolean }) {
 
   // only show test rules form if we have an AI rule. this form won't match group/static rules which will confuse users
   const hasAiRules = rules?.some(
-    (rule) =>
-      isAIRule(rule) &&
-      !isGroupRule(rule) &&
-      !isStaticRule(rule) &&
-      !isCategoryRule(rule),
+    (rule) => isAIRule(rule) && !isGroupRule(rule) && !isStaticRule(rule),
   );
 
   const isRunningAllRef = useRef(false);
   const [isRunningAll, setIsRunningAll] = useState(false);
   const [currentPageLimit, setCurrentPageLimit] = useState(testMode ? 1 : 10);
   const [isRunning, setIsRunning] = useState<Record<string, boolean>>({});
-  const [results, setResults] = useState<Record<string, RunRulesResult>>({});
+  const [resultsMap, setResultsMap] = useState<
+    Record<string, RunRulesResult[]>
+  >({});
   const handledThreadsRef = useRef(new Set<string>());
 
   // Merge existing rules with results
   const allResults = useMemo(() => {
-    const merged = { ...results };
+    const merged = { ...resultsMap };
     if (existingRules?.rulesMap) {
       for (const [messageId, rule] of Object.entries(existingRules.rulesMap)) {
         if (!merged[messageId]) {
-          merged[messageId] = {
-            rule: rule.rule,
-            actionItems: rule.actionItems,
-            reason: rule.reason,
+          merged[messageId] = rule.map((r) => ({
+            rule: r.rule,
+            actionItems: r.actionItems,
+            reason: r.reason,
             existing: true,
-          };
+            createdAt: r.createdAt,
+            status: r.status,
+          }));
         }
       }
     }
     return merged;
-  }, [results, existingRules]);
+  }, [resultsMap, existingRules]);
 
   const onRun = useCallback(
     async (message: Message, rerun?: boolean) => {
@@ -157,13 +150,37 @@ export function ProcessRulesContent({ testMode }: { testMode: boolean }) {
         isTest: testMode,
         rerun,
       });
+      const logContext = {
+        emailAccountId,
+        messageId: message.id,
+        threadId: message.threadId,
+        rerun: !!rerun,
+        testMode,
+      };
       if (result?.serverError) {
+        logger.error("runRulesAction returned server error", {
+          ...logContext,
+          serverError: true,
+        });
         toastError({
           title: "There was an error processing the email",
           description: result.serverError,
         });
       } else if (result?.data) {
-        setResults((prev) => ({ ...prev, [message.id]: result.data! }));
+        const resultSummary = summarizeRunRulesResult(result.data);
+        logger.info("runRulesAction returned results", {
+          ...logContext,
+          ...resultSummary,
+        });
+        logger.trace("runRulesAction returned result details", {
+          ...logContext,
+          ...getSelectionMetadataTraceDetails(
+            result.data.map((item) => item.selectionMetadata),
+          ),
+        });
+        setResultsMap((prev) => ({ ...prev, [message.id]: result.data! }));
+      } else {
+        logger.warn("runRulesAction returned empty response", logContext);
       }
       setIsRunning((prev) => ({ ...prev, [message.id]: false }));
     },
@@ -254,12 +271,10 @@ export function ProcessRulesContent({ testMode }: { testMode: boolean }) {
               {testMode ? "Test All" : "Run on All"}
             </Button>
           )}
-
-          {!testMode && <BulkRunRules />}
         </div>
 
         <div className="flex items-center gap-2">
-          {hasAiRules && testMode && (
+          {testMode && (
             <Button
               variant="ghost"
               onClick={() => setShowCustomForm((show) => !show)}
@@ -276,17 +291,27 @@ export function ProcessRulesContent({ testMode }: { testMode: boolean }) {
         </div>
       </div>
 
-      {hasAiRules && showCustomForm && testMode && (
-        <div className="my-2">
+      {showCustomForm && testMode && (
+        <div className="my-2 space-y-2">
+          {!hasAiRules && (
+            <Alert variant="destructive">
+              <AlertDescription>
+                You don't have any AI rules set up. The test won't match
+                anything. Please create AI rules first.
+              </AlertDescription>
+            </Alert>
+          )}
           <TestCustomEmailForm />
         </div>
       )}
 
-      <LoadingContent loading={isLoading} error={error}>
+      <LoadingContent
+        loading={isLoading}
+        error={error}
+        loadingComponent={<ProcessRulesLoading />}
+      >
         {messages.length === 0 ? (
-          <div className="p-4 text-center text-sm text-muted-foreground">
-            No emails found
-          </div>
+          <MutedText className="p-4 text-center">No emails found</MutedText>
         ) : (
           <Card>
             <Table>
@@ -297,10 +322,10 @@ export function ProcessRulesContent({ testMode }: { testMode: boolean }) {
                     message={message}
                     userEmail={userEmail}
                     isRunning={isRunning[message.id]}
-                    result={allResults[message.id]}
+                    results={allResults[message.id]}
                     onRun={(rerun) => onRun(message, rerun)}
                     testMode={testMode}
-                    emailAccountId={emailAccountId}
+                    canRerun={canRerun}
                     setInput={setInput}
                   />
                 ))}
@@ -330,23 +355,64 @@ export function ProcessRulesContent({ testMode }: { testMode: boolean }) {
   );
 }
 
+function ProcessRulesLoading() {
+  return (
+    <Card>
+      <Table>
+        <TableBody>
+          {Array.from({ length: 5 }).map((_, index) => (
+            <TableRow key={index} className="hover:bg-transparent">
+              <TableCell>
+                <div className="flex items-center justify-between gap-4">
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <Skeleton className="h-4 w-40" />
+                    <Skeleton className="h-4 w-full max-w-xl" />
+                    <Skeleton className="h-3 w-full max-w-md" />
+                  </div>
+                  <Skeleton className="h-9 w-16 shrink-0" />
+                </div>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </Card>
+  );
+}
+
+function summarizeRunRulesResult(results: RunRulesResult[]) {
+  const selectionMetadataSummary = summarizeSelectionMetadata(
+    results.map((result) => result.selectionMetadata),
+  );
+
+  return {
+    resultCount: results.length,
+    matchedRuleNames: results
+      .map((result) => result.rule?.name)
+      .filter(isDefined)
+      .join(", "),
+    statuses: results.map((result) => result.status).join(", "),
+    ...selectionMetadataSummary,
+  };
+}
+
 function ProcessRulesRow({
   message,
   userEmail,
   isRunning,
-  result,
+  results,
   onRun,
   testMode,
-  emailAccountId,
+  canRerun,
   setInput,
 }: {
   message: Message;
   userEmail: string;
   isRunning: boolean;
-  result: RunRulesResult;
+  results: RunRulesResult[];
   onRun: (rerun?: boolean) => void;
   testMode: boolean;
-  emailAccountId: string;
+  canRerun: boolean;
   setInput: (input: string) => void;
 }) {
   return (
@@ -356,44 +422,35 @@ function ProcessRulesRow({
       }
     >
       <TableCell>
-        <div className="flex items-center justify-between">
-          <EmailMessageCell
-            sender={message.headers.from}
-            subject={message.headers.subject}
-            snippet={message.snippet}
-            userEmail={userEmail}
-            threadId={message.threadId}
-            messageId={message.id}
-            labelIds={message.labelIds}
-          />
-          <div className="ml-4 flex items-center gap-1">
-            {result ? (
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <EmailMessageCell
+              sender={message.headers.from}
+              subject={message.headers.subject}
+              snippet={message.snippet}
+              userEmail={userEmail}
+              threadId={message.threadId}
+              messageId={message.id}
+              externalUrl={message.externalUrl}
+              labelIds={message.labelIds}
+              collapseLabels={testMode}
+            />
+          </div>
+          <div className="ml-4 flex shrink-0 items-center gap-1">
+            {results ? (
               <>
-                <div className="flex max-w-xs flex-col justify-center gap-0.5 whitespace-nowrap">
-                  {result.existing && (
-                    <Badge color="yellow">Already processed</Badge>
-                  )}
-                  <ProcessResultDisplay
-                    result={result}
-                    emailAccountId={emailAccountId}
-                  />
-                </div>
+                <ResultsDisplay results={results} />
                 <FixWithChat
                   setInput={setInput}
                   message={message}
-                  result={result}
+                  results={results}
                 />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={isRunning}
-                  onClick={() => onRun(true)}
-                >
-                  <RefreshCcwIcon
-                    className={cn("mr-2 size-4", isRunning && "animate-spin")}
-                  />
-                  <span>{testMode ? "Retest" : "Rerun"}</span>
-                </Button>
+                <RerunButton
+                  isRunning={isRunning}
+                  canRerun={canRerun}
+                  testMode={testMode}
+                  onRun={onRun}
+                />
               </>
             ) : (
               <Button
@@ -410,5 +467,39 @@ function ProcessRulesRow({
         </div>
       </TableCell>
     </TableRow>
+  );
+}
+
+function RerunButton({
+  isRunning,
+  canRerun,
+  testMode,
+  onRun,
+}: {
+  isRunning: boolean;
+  canRerun: boolean;
+  testMode: boolean;
+  onRun: (rerun?: boolean) => void;
+}) {
+  const button = (
+    <Button
+      variant="outline"
+      size="sm"
+      disabled={isRunning || !canRerun}
+      onClick={() => onRun(true)}
+    >
+      <RefreshCcwIcon
+        className={cn("mr-2 size-4", isRunning && "animate-spin")}
+      />
+      <span>{testMode ? "Retest" : "Rerun"}</span>
+    </Button>
+  );
+
+  if (canRerun) return button;
+
+  return (
+    <Tooltip content={RERUN_UPGRADE_MESSAGE}>
+      <span className="inline-flex cursor-not-allowed">{button}</span>
+    </Tooltip>
   );
 }

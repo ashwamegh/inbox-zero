@@ -1,29 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { handleLoopsEvents } from "./loops-events";
-
-// Mock the Loops functions
-vi.mock("@inboxzero/loops", () => ({
-  createContact: vi.fn(),
-  completedTrial: vi.fn(),
-  startedTrial: vi.fn(),
-  cancelledPremium: vi.fn(),
-}));
-
-// Mock the logger
-vi.mock("@/utils/logger", () => ({
-  createScopedLogger: () => ({
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  }),
-}));
-
+import { createTestLogger } from "@/__tests__/helpers";
 import {
   createContact,
   completedTrial,
   startedTrial,
   cancelledPremium,
 } from "@inboxzero/loops";
+
+const logger = createTestLogger();
+
+vi.mock("@inboxzero/loops", () => ({
+  createContact: vi.fn().mockResolvedValue({ success: true }),
+  completedTrial: vi.fn().mockResolvedValue(undefined),
+  startedTrial: vi.fn().mockResolvedValue(undefined),
+  cancelledPremium: vi.fn().mockResolvedValue(undefined),
+}));
 
 describe("handleLoopsEvents", () => {
   beforeEach(() => {
@@ -58,7 +50,8 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(createContact).toHaveBeenCalledWith("user@example.com", "John");
@@ -78,7 +71,8 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(createContact).not.toHaveBeenCalled();
@@ -98,7 +92,8 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(createContact).not.toHaveBeenCalled();
@@ -119,7 +114,8 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(createContact).toHaveBeenCalledWith("user@example.com", undefined);
@@ -142,12 +138,13 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(completedTrial).toHaveBeenCalledWith(
         "user@example.com",
-        "BUSINESS_MONTHLY",
+        "STARTER_MONTHLY",
       );
       expect(startedTrial).not.toHaveBeenCalled(); // Should not call direct upgrade
     });
@@ -168,6 +165,7 @@ describe("handleLoopsEvents", () => {
         currentPremium,
         newSubscription,
         newTier: null, // No tier
+        logger,
       });
 
       expect(completedTrial).not.toHaveBeenCalled();
@@ -190,12 +188,13 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(startedTrial).toHaveBeenCalledWith(
         "user@example.com",
-        "BUSINESS_MONTHLY",
+        "STARTER_MONTHLY",
       );
       expect(completedTrial).not.toHaveBeenCalled(); // Should not call trial completion
     });
@@ -215,12 +214,13 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(startedTrial).toHaveBeenCalledWith(
         "user@example.com",
-        "BUSINESS_MONTHLY",
+        "STARTER_MONTHLY",
       );
       expect(completedTrial).not.toHaveBeenCalled();
     });
@@ -240,6 +240,7 @@ describe("handleLoopsEvents", () => {
         currentPremium,
         newSubscription,
         newTier: null, // No tier
+        logger,
       });
 
       expect(startedTrial).not.toHaveBeenCalled();
@@ -259,7 +260,8 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(startedTrial).not.toHaveBeenCalled();
@@ -280,7 +282,8 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       // Should call completedTrial, not startedTrial
@@ -304,7 +307,8 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(cancelledPremium).toHaveBeenCalledWith("user@example.com");
@@ -324,7 +328,8 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(cancelledPremium).toHaveBeenCalledWith("user@example.com");
@@ -344,7 +349,8 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(cancelledPremium).toHaveBeenCalledWith("user@example.com");
@@ -364,7 +370,8 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(cancelledPremium).not.toHaveBeenCalled();
@@ -376,7 +383,8 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium: null,
         newSubscription: mockNewSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(createContact).not.toHaveBeenCalled();
@@ -395,7 +403,8 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription: mockNewSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(createContact).not.toHaveBeenCalled();
@@ -420,7 +429,8 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(createContact).toHaveBeenCalledWith("admin@example.com", "Admin");
@@ -447,7 +457,8 @@ describe("handleLoopsEvents", () => {
         handleLoopsEvents({
           currentPremium,
           newSubscription,
-          newTier: "BUSINESS_MONTHLY",
+          newTier: "STARTER_MONTHLY",
+          logger,
         }),
       ).resolves.not.toThrow();
     });
@@ -468,7 +479,8 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       // Should create contact for trial start
@@ -493,7 +505,8 @@ describe("handleLoopsEvents", () => {
       await handleLoopsEvents({
         currentPremium,
         newSubscription,
-        newTier: "BUSINESS_MONTHLY",
+        newTier: "STARTER_MONTHLY",
+        logger,
       });
 
       expect(createContact).toHaveBeenCalledWith("user@example.com", "John");

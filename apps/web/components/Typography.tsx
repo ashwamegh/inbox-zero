@@ -9,7 +9,7 @@ const PageHeading = forwardRef<
   <h1
     ref={ref}
     className={cn(
-      "font-cal text-2xl leading-7 text-primary dark:text-foreground sm:truncate lg:text-3xl",
+      "font-title text-2xl leading-7 text-primary dark:text-foreground sm:truncate lg:text-3xl",
       className,
     )}
     {...props}
@@ -35,7 +35,7 @@ const SectionHeader = forwardRef<
 >(({ className, ...props }, ref) => (
   <h4
     ref={ref}
-    className={cn("font-cal text-base leading-7 text-foreground", className)}
+    className={cn("font-title text-base leading-7 text-foreground", className)}
     {...props}
   />
 ));
@@ -74,7 +74,7 @@ const TypographyH3 = forwardRef<
 >(({ className, ...props }, ref) => (
   <h3
     ref={ref}
-    className={cn("scroll-m-20 font-cal text-2xl", className)}
+    className={cn("scroll-m-20 font-title text-2xl", className)}
     {...props}
   />
 ));
@@ -84,7 +84,7 @@ const TypographyH4 = forwardRef<
   HTMLHeadingElement,
   React.HTMLAttributes<HTMLHeadingElement>
 >(({ className, ...props }, ref) => (
-  <h4 ref={ref} className={cn("font-cal text-lg", className)} {...props} />
+  <h4 ref={ref} className={cn("font-title text-lg", className)} {...props} />
 ));
 TypographyH4.displayName = "TypographyH4";
 
@@ -100,20 +100,30 @@ const TypographyP = forwardRef<
 ));
 TypographyP.displayName = "TypographyP";
 
+const MutedText = forwardRef<
+  HTMLParagraphElement,
+  React.HTMLAttributes<HTMLParagraphElement>
+>(({ className, ...props }, ref) => (
+  <p
+    ref={ref}
+    className={cn("text-sm text-muted-foreground", className)}
+    {...props}
+  />
+));
+MutedText.displayName = "MutedText";
+
 type LinkProps = React.ComponentProps<typeof Link>;
 const TextLink = forwardRef<HTMLAnchorElement, LinkProps>(
-  ({ className, ...props }, ref) => {
-    return (
-      <Link
-        ref={ref}
-        className={cn(
-          "font-semibold text-blue-600 hover:underline dark:text-primary",
-          className,
-        )}
-        {...props}
-      />
-    );
-  },
+  ({ className, ...props }, ref) => (
+    <Link
+      ref={ref}
+      className={cn(
+        "font-semibold text-blue-600 hover:underline dark:text-primary",
+        className,
+      )}
+      {...props}
+    />
+  ),
 );
 
 TextLink.displayName = "TextLink";
@@ -127,5 +137,6 @@ export {
   SectionDescription,
   MessageText,
   TypographyP,
+  MutedText,
   TextLink,
 };

@@ -1,19 +1,17 @@
 import { NextResponse } from "next/server";
 import { withEmailProvider } from "@/utils/middleware";
-import { createScopedLogger } from "@/utils/logger";
 import type { ThreadsResponse } from "@/app/api/threads/route";
-
-const logger = createScopedLogger("api/threads/batch");
+import { runWithBoundedConcurrency } from "@/utils/async";
+import { isIgnoredSender } from "@/utils/filter-ignored-senders";
 
 export type ThreadsBatchResponse = {
   threads: ThreadsResponse["threads"];
 };
 
-export const dynamic = "force-dynamic";
-
 export const maxDuration = 30;
+const THREAD_FETCH_CONCURRENCY = 5;
 
-export const GET = withEmailProvider(async (request) => {
+export const GET = withEmailProvider("threads/batch", async (request) => {
   const { emailProvider } = request;
   const { emailAccountId } = request.auth;
 
@@ -34,25 +32,54 @@ export const GET = withEmailProvider(async (request) => {
   }
 
   try {
-    // Get threads using the provider
-    const threads = await Promise.all(
-      threadIds.map(async (threadId) => {
-        try {
-          return await emailProvider.getThread(threadId);
-        } catch (error) {
-          logger.error("Error fetching thread", { error, threadId });
-          return null;
-        }
-      }),
-    );
+    type Thread = Awaited<ReturnType<typeof emailProvider.getThread>>;
+    type ThreadMessage = Thread["messages"][number];
 
-    const validThreads = threads.filter(
-      (thread): thread is ThreadsResponse["threads"][number] => thread !== null,
-    );
+    const results = await runWithBoundedConcurrency({
+      items: threadIds,
+      concurrency: THREAD_FETCH_CONCURRENCY,
+      run: (threadId) => emailProvider.getThread(threadId),
+    });
+
+    for (const { item: threadId, result } of results) {
+      if (result.status === "rejected") {
+        request.logger.error("Error fetching thread", {
+          error: result.reason,
+          threadId,
+        });
+      }
+    }
+
+    const validThreads = (
+      await Promise.all(
+        results
+          .filter((r) => r.result.status === "fulfilled")
+          .map(async ({ result }) => {
+            const thread = (result as PromiseFulfilledResult<Thread>).value;
+            const filteredMessages = thread.messages.filter(
+              (message: ThreadMessage) => {
+                if (!message.headers?.from) return true;
+                return !isIgnoredSender(message.headers.from);
+              },
+            );
+            if (!filteredMessages.length) return null;
+
+            return {
+              id: thread.id,
+              messages: filteredMessages,
+              snippet: thread.snippet,
+              plan: undefined,
+            };
+          }),
+      )
+    ).filter(Boolean) as ThreadsResponse["threads"];
 
     return NextResponse.json({ threads: validThreads });
   } catch (error) {
-    logger.error("Error fetching batch threads", { error, emailAccountId });
+    request.logger.error("Error fetching batch threads", {
+      error,
+      emailAccountId,
+    });
     return NextResponse.json(
       { error: "Failed to fetch threads" },
       { status: 500 },

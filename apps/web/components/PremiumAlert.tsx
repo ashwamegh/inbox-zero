@@ -3,66 +3,57 @@
 import Link from "next/link";
 import { CrownIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { hasAiAccess, hasUnsubscribeAccess, isPremium } from "@/utils/premium";
+import { usePremium } from "@/hooks/usePremium";
 import { Tooltip } from "@/components/Tooltip";
 import { usePremiumModal } from "@/app/(app)/premium/PremiumModal";
-import { PremiumTier } from "@prisma/client";
-import { businessTierName } from "@/app/(app)/premium/config";
-import { useUser } from "@/hooks/useUser";
+import type { PremiumTier } from "@/generated/prisma/enums";
+import { starterTierName } from "@/app/(app)/premium/config";
 import { ActionCard } from "@/components/ui/card";
-
-export function usePremium() {
-  const swrResponse = useUser();
-  const { data } = swrResponse;
-
-  const premium = data?.premium;
-  const aiApiKey = data?.aiApiKey;
-
-  const isUserPremium = !!(
-    premium &&
-    isPremium(premium.lemonSqueezyRenewsAt, premium.stripeSubscriptionStatus)
-  );
-
-  const isProPlanWithoutApiKey =
-    (premium?.tier === PremiumTier.PRO_MONTHLY ||
-      premium?.tier === PremiumTier.PRO_ANNUALLY) &&
-    !aiApiKey;
-
-  return {
-    ...swrResponse,
-    premium,
-    isPremium: isUserPremium,
-    hasUnsubscribeAccess:
-      isUserPremium ||
-      hasUnsubscribeAccess(premium?.tier || null, premium?.unsubscribeCredits),
-    hasAiAccess: hasAiAccess(premium?.tier || null, aiApiKey),
-    isProPlanWithoutApiKey,
-    tier: premium?.tier,
-  };
-}
 
 export function PremiumAiAssistantAlert({
   showSetApiKey,
   className,
   tier,
+  stripeSubscriptionStatus,
+  activeOnly,
 }: {
   showSetApiKey: boolean;
   className?: string;
   tier?: PremiumTier | null;
+  stripeSubscriptionStatus?: string | null;
+  activeOnly?: boolean;
 }) {
   const { PremiumModal, openModal } = usePremiumModal();
 
-  const isBasicPlan =
-    tier === PremiumTier.BASIC_MONTHLY || tier === PremiumTier.BASIC_ANNUALLY;
+  const isBasicPlan = tier === "BASIC_MONTHLY" || tier === "BASIC_ANNUALLY";
+
+  const isStripeTrialing =
+    stripeSubscriptionStatus && stripeSubscriptionStatus !== "active";
+
+  if (activeOnly && isStripeTrialing) {
+    return (
+      <div className={className}>
+        <ActionCard
+          icon={<CrownIcon className="h-5 w-5" />}
+          title="Active Subscription Required"
+          description="This feature is not available on trial plans."
+        />
+      </div>
+    );
+  }
 
   return (
     <div className={className}>
       {isBasicPlan ? (
         <ActionCard
           icon={<CrownIcon className="h-5 w-5" />}
-          title={`${businessTierName} Plan Required`}
-          description={`Switch to the ${businessTierName} plan to use this feature.`}
-          action={<Button onClick={openModal}>Switch Plan</Button>}
+          title={`${starterTierName} Plan Required`}
+          description={`Switch to the ${starterTierName} plan to use this feature.`}
+          action={
+            <Button variant="primaryBlack" onClick={openModal}>
+              Switch Plan
+            </Button>
+          }
         />
       ) : showSetApiKey ? (
         <ActionCard
@@ -70,7 +61,7 @@ export function PremiumAiAssistantAlert({
           title="API Key Required"
           description="You need to set an AI API key to use this feature."
           action={
-            <Button asChild>
+            <Button variant="primaryBlack" asChild>
               <Link href="/settings">Set API Key</Link>
             </Button>
           }
@@ -79,8 +70,12 @@ export function PremiumAiAssistantAlert({
         <ActionCard
           icon={<CrownIcon className="h-5 w-5" />}
           title="Premium Feature"
-          description={`This is a premium feature. Upgrade to the ${businessTierName} plan.`}
-          action={<Button onClick={openModal}>Upgrade</Button>}
+          description={`This is a premium feature. Upgrade to the ${starterTierName} plan.`}
+          action={
+            <Button variant="primaryBlack" onClick={openModal}>
+              Upgrade
+            </Button>
+          }
         />
       )}
       <PremiumModal />
@@ -88,12 +83,19 @@ export function PremiumAiAssistantAlert({
   );
 }
 
-export function PremiumAlertWithData({ className }: { className?: string }) {
+export function PremiumAlertWithData({
+  className,
+  activeOnly,
+}: {
+  className?: string;
+  activeOnly?: boolean;
+}) {
   const {
     hasAiAccess,
     isLoading: isLoadingPremium,
     isProPlanWithoutApiKey,
     tier,
+    data,
   } = usePremium();
 
   if (!isLoadingPremium && !hasAiAccess) {
@@ -102,6 +104,10 @@ export function PremiumAlertWithData({ className }: { className?: string }) {
         showSetApiKey={isProPlanWithoutApiKey}
         className={className}
         tier={tier}
+        stripeSubscriptionStatus={
+          data?.premium?.stripeSubscriptionStatus || null
+        }
+        activeOnly={activeOnly}
       />
     );
   }
@@ -110,7 +116,7 @@ export function PremiumAlertWithData({ className }: { className?: string }) {
 }
 
 export function PremiumTooltip(props: {
-  children: React.ReactElement<any>;
+  children: React.ReactElement;
   showTooltip: boolean;
   openModal: () => void;
 }) {

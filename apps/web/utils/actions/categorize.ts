@@ -14,103 +14,38 @@ import {
   categorizeSender,
   updateCategoryForSender,
 } from "@/utils/categorize/senders/categorize";
+import { startBulkCategorization } from "@/utils/categorize/senders/start-bulk-categorization";
 import { validateUserAndAiAccess } from "@/utils/user/validate";
 import { SafeError } from "@/utils/error";
-import {
-  deleteEmptyCategorizeSendersQueues,
-  publishToAiCategorizeSendersQueue,
-} from "@/utils/upstash/categorize-senders";
-import { createScopedLogger } from "@/utils/logger";
-import { saveCategorizationTotalItems } from "@/utils/redis/categorization-progress";
-import { getSenders } from "@/app/api/user/categorize/senders/uncategorized/get-senders";
-import { extractEmailAddress } from "@/utils/email";
 import { actionClient } from "@/utils/actions/safe-action";
 import { prefixPath } from "@/utils/path";
 
-const logger = createScopedLogger("actions/categorize");
-
 export const bulkCategorizeSendersAction = actionClient
   .metadata({ name: "bulkCategorizeSenders" })
-  .action(async ({ ctx: { emailAccountId } }) => {
+  .action(async ({ ctx: { emailAccountId, logger, provider } }) => {
     await validateUserAndAiAccess({ emailAccountId });
 
-    // Delete empty queues as Qstash has a limit on how many queues we can have
-    // We could run this in a cron too but simplest to do here for now
-    deleteEmptyCategorizeSendersQueues({
-      skipEmailAccountId: emailAccountId,
-    }).catch((error) => {
-      logger.error("Error deleting empty queues", { error });
-    });
-
-    const LIMIT = 100;
-
-    async function getUncategorizedSenders(offset: number) {
-      const result = await getSenders({
-        emailAccountId,
-        limit: LIMIT,
-        offset,
-      });
-      const allSenders = result.map((sender) =>
-        extractEmailAddress(sender.from),
-      );
-      const existingSenders = await prisma.newsletter.findMany({
-        where: {
-          email: { in: allSenders },
-          emailAccountId,
-          category: { isNot: null },
-        },
-        select: { email: true },
-      });
-      const existingSenderEmails = new Set(existingSenders.map((s) => s.email));
-      const uncategorizedSenders = allSenders.filter(
-        (email) => !existingSenderEmails.has(email),
-      );
-
-      return uncategorizedSenders;
-    }
-
-    let totalUncategorizedSenders = 0;
-    let uncategorizedSenders: string[] = [];
-    for (let i = 0; i < 20; i++) {
-      const newUncategorizedSenders = await getUncategorizedSenders(i * LIMIT);
-
-      logger.trace("Got uncategorized senders", {
-        emailAccountId,
-        uncategorizedSenders: newUncategorizedSenders.length,
-      });
-
-      if (newUncategorizedSenders.length === 0) continue;
-      uncategorizedSenders.push(...newUncategorizedSenders);
-      totalUncategorizedSenders += newUncategorizedSenders.length;
-
-      await saveCategorizationTotalItems({
-        emailAccountId,
-        totalItems: totalUncategorizedSenders,
-      });
-
-      // publish to qstash
-      await publishToAiCategorizeSendersQueue({
-        emailAccountId,
-        senders: uncategorizedSenders,
-      });
-
-      uncategorizedSenders = [];
-    }
-
-    logger.info("Queued senders for categorization", {
+    const emailProvider = await createEmailProvider({
       emailAccountId,
-      totalUncategorizedSenders,
+      provider,
+      logger,
     });
 
-    return { totalUncategorizedSenders };
+    const result = await startBulkCategorization({
+      emailAccountId,
+      emailProvider,
+      logger,
+    });
+
+    return { totalUncategorizedSenders: result.totalQueuedSenders };
   });
 
 export const categorizeSenderAction = actionClient
   .metadata({ name: "categorizeSender" })
-  .schema(z.object({ senderAddress: z.string() }))
+  .inputSchema(z.object({ senderAddress: z.string() }))
   .action(
     async ({
-      ctx: { emailAccountId, provider },
+      ctx: { emailAccountId, provider, logger },
       parsedInput: { senderAddress },
     }) => {
       const userResult = await validateUserAndAiAccess({ emailAccountId });
@@ -119,6 +54,7 @@ export const categorizeSenderAction = actionClient
       const emailProvider = await createEmailProvider({
         emailAccountId,
         provider,
+        logger,
       });
 
       const result = await categorizeSender(
@@ -135,7 +71,7 @@ export const categorizeSenderAction = actionClient
 
 export const changeSenderCategoryAction = actionClient
   .metadata({ name: "changeSenderCategory" })
-  .schema(z.object({ sender: z.string(), categoryId: z.string() }))
+  .inputSchema(z.object({ sender: z.string(), categoryId: z.string() }))
   .action(
     async ({
       ctx: { emailAccountId },
@@ -158,7 +94,7 @@ export const changeSenderCategoryAction = actionClient
 
 export const upsertDefaultCategoriesAction = actionClient
   .metadata({ name: "upsertDefaultCategories" })
-  .schema(
+  .inputSchema(
     z.object({
       categories: z.array(
         z.object({
@@ -190,7 +126,7 @@ export const upsertDefaultCategoriesAction = actionClient
 
 export const createCategoryAction = actionClient
   .metadata({ name: "createCategory" })
-  .schema(createCategoryBody)
+  .inputSchema(createCategoryBody)
   .action(
     async ({ ctx: { emailAccountId }, parsedInput: { name, description } }) => {
       await upsertCategory({
@@ -204,7 +140,7 @@ export const createCategoryAction = actionClient
 
 export const deleteCategoryAction = actionClient
   .metadata({ name: "deleteCategory" })
-  .schema(z.object({ categoryId: z.string() }))
+  .inputSchema(z.object({ categoryId: z.string() }))
   .action(async ({ ctx: { emailAccountId }, parsedInput: { categoryId } }) => {
     await deleteCategory({ emailAccountId, categoryId });
 
@@ -262,7 +198,7 @@ async function upsertCategory({
 
 export const setAutoCategorizeAction = actionClient
   .metadata({ name: "setAutoCategorize" })
-  .schema(z.object({ autoCategorizeSenders: z.boolean() }))
+  .inputSchema(z.object({ autoCategorizeSenders: z.boolean() }))
   .action(
     async ({
       ctx: { emailAccountId },
@@ -277,7 +213,7 @@ export const setAutoCategorizeAction = actionClient
 
 export const removeAllFromCategoryAction = actionClient
   .metadata({ name: "removeAllFromCategory" })
-  .schema(z.object({ categoryName: z.string() }))
+  .inputSchema(z.object({ categoryName: z.string() }))
   .action(
     async ({ ctx: { emailAccountId }, parsedInput: { categoryName } }) => {
       await prisma.newsletter.updateMany({

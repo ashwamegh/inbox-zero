@@ -12,12 +12,12 @@ import {
   KNOWLEDGE_BASIC_MAX_ITEMS,
   KNOWLEDGE_BASIC_MAX_CHARS,
 } from "@/utils/config";
-import { PremiumTier } from "@prisma/client";
+import { PremiumTier } from "@/generated/prisma/enums";
 import { checkHasAccess } from "@/utils/premium/server";
 
 export const createKnowledgeAction = actionClient
   .metadata({ name: "createKnowledge" })
-  .schema(createKnowledgeBody)
+  .inputSchema(createKnowledgeBody)
   .action(
     async ({
       ctx: { emailAccountId, userId },
@@ -34,7 +34,7 @@ export const createKnowledgeAction = actionClient
       ) {
         const hasAccess = await checkHasAccess({
           userId,
-          minimumTier: PremiumTier.BUSINESS_PLUS_MONTHLY,
+          minimumTier: PremiumTier.PLUS_MONTHLY,
         });
 
         if (!hasAccess) {
@@ -56,7 +56,7 @@ export const createKnowledgeAction = actionClient
 
 export const updateKnowledgeAction = actionClient
   .metadata({ name: "updateKnowledge" })
-  .schema(updateKnowledgeBody)
+  .inputSchema(updateKnowledgeBody)
   .action(
     async ({
       ctx: { emailAccountId, userId },
@@ -65,7 +65,7 @@ export const updateKnowledgeAction = actionClient
       if (content.length > KNOWLEDGE_BASIC_MAX_CHARS) {
         const hasAccess = await checkHasAccess({
           userId,
-          minimumTier: PremiumTier.BUSINESS_PLUS_MONTHLY,
+          minimumTier: PremiumTier.PLUS_MONTHLY,
         });
 
         if (!hasAccess) {
@@ -84,7 +84,7 @@ export const updateKnowledgeAction = actionClient
 
 export const deleteKnowledgeAction = actionClient
   .metadata({ name: "deleteKnowledge" })
-  .schema(deleteKnowledgeBody)
+  .inputSchema(deleteKnowledgeBody)
   .action(async ({ ctx: { emailAccountId }, parsedInput: { id } }) => {
     await prisma.knowledge.delete({
       where: { id, emailAccountId },

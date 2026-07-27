@@ -1,7 +1,7 @@
 import prisma from "@/utils/prisma";
 import { ReplyTrackerEmails } from "./ReplyTrackerEmails";
 import { getDateFilter, type TimeRange } from "./date-filter";
-import { Prisma } from "@prisma/client";
+import { Prisma } from "@/generated/prisma/client";
 
 const PAGE_SIZE = 20;
 
@@ -33,12 +33,15 @@ export async function Resolved({
       OFFSET ${skip}
     `,
     prisma.$queryRaw<[{ count: bigint }]>`
-      SELECT COUNT(DISTINCT "threadId") as count
-      FROM "ThreadTracker"
-      WHERE "emailAccountId" = ${emailAccountId}
-      ${dateFilter ? Prisma.sql`AND "sentAt" <= (${dateFilter}->>'lte')::timestamp` : Prisma.empty}
-      GROUP BY "threadId"
-      HAVING bool_and(resolved) = true
+      SELECT COUNT(*) as count
+      FROM (
+        SELECT 1
+        FROM "ThreadTracker"
+        WHERE "emailAccountId" = ${emailAccountId}
+        ${dateFilter ? Prisma.sql`AND "sentAt" <= (${dateFilter}->>'lte')::timestamp` : Prisma.empty}
+        GROUP BY "threadId"
+        HAVING bool_and(resolved) = true
+      ) t
     `,
   ]);
 

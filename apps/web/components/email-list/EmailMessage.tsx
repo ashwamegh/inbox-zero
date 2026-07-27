@@ -23,8 +23,9 @@ import { EmailDetails } from "@/components/email-list/EmailDetails";
 import { HtmlEmail, PlainEmail } from "@/components/email-list/EmailContents";
 import { EmailAttachments } from "@/components/email-list/EmailAttachments";
 import { Loading } from "@/components/Loading";
-import { MessageText } from "@/components/Typography";
+import { MessageText, MutedText } from "@/components/Typography";
 import { useAccount } from "@/providers/EmailAccountProvider";
+import { formatReplySubject } from "@/utils/email/subject";
 
 export function EmailMessage({
   message,
@@ -159,11 +160,11 @@ function TopBar({
         )}
       </div>
       <div className="flex items-center space-x-2">
-        <p className="mt-1 whitespace-nowrap text-sm text-muted-foreground sm:ml-3 sm:mt-0">
+        <MutedText className="mt-1 whitespace-nowrap sm:ml-3 sm:mt-0">
           <time dateTime={message.headers.date}>
             {formatShortDate(new Date(message.headers.date))}
           </time>
-        </p>
+        </MutedText>
         {showReplyButton && (
           <div className="relative flex items-center">
             <Tooltip content="Reply">
@@ -212,12 +213,14 @@ function ReplyPanel({
   const [reply, setReply] = useState<string | null>(null);
   // scroll to the reply panel when it first opens
   useEffect(() => {
-    if (defaultShowReply && replyRef.current) {
-      // hacky using setTimeout
-      setTimeout(() => {
-        replyRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-      }, 500);
-    }
+    if (!defaultShowReply || !replyRef.current) return;
+
+    // Wait for the reply panel layout before scrolling.
+    const scrollTimeout = setTimeout(() => {
+      replyRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }, 500);
+
+    return () => clearTimeout(scrollTimeout);
   }, [defaultShowReply]);
 
   useEffect(() => {
@@ -302,7 +305,7 @@ function ReplyPanel({
           <ComposeEmailFormLazy
             replyingToEmail={replyingToEmail}
             refetch={refetch}
-            onSuccess={(messageId, threadId) => {
+            onSuccess={(messageId: string, threadId: string) => {
               onSendSuccess(messageId, threadId);
               onCloseCompose();
             }}
@@ -328,9 +331,10 @@ const prepareReplyingToEmail = (
     // If following an email from yourself, don't add "Re:" prefix
     subject: sentFromUser
       ? message.headers.subject
-      : `Re: ${message.headers.subject}`,
-    headerMessageId: message.headers["message-id"]!,
-    threadId: message.threadId!,
+      : formatReplySubject(message.headers.subject),
+    headerMessageId: message.headers["message-id"] || undefined,
+    messageId: message.id || undefined,
+    threadId: message.threadId || undefined,
     // Keep original CC
     cc: message.headers.cc,
     // Keep original BCC if available
@@ -344,8 +348,8 @@ const prepareReplyingToEmail = (
 const prepareForwardingEmail = (message: ParsedMessage): ReplyingToEmail => ({
   to: "",
   subject: forwardEmailSubject(message.headers.subject),
-  headerMessageId: "",
-  threadId: message.threadId!,
+  headerMessageId: undefined,
+  threadId: message.threadId || undefined,
   cc: "",
   references: "",
   draftHtml: forwardEmailHtml({ content: "", message }),
@@ -358,8 +362,9 @@ function prepareDraftReplyEmail(draft: ParsedMessage): ReplyingToEmail {
   return {
     to: draft.headers.to,
     subject: draft.headers.subject,
-    headerMessageId: draft.headers["message-id"]!,
-    threadId: draft.threadId!,
+    headerMessageId: draft.headers["message-id"] || undefined,
+    messageId: draft.id || undefined,
+    threadId: draft.threadId || undefined,
     cc: draft.headers.cc,
     bcc: draft.headers.bcc,
     references: draft.headers.references,

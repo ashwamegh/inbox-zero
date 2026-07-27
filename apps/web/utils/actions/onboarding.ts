@@ -1,11 +1,14 @@
 "use server";
 
+import { after } from "next/server";
 import {
   saveOnboardingAnswersBody,
   saveOnboardingFeaturesSchema,
 } from "@/utils/actions/onboarding.validation";
 import { actionClientUser } from "@/utils/actions/safe-action";
 import prisma from "@/utils/prisma";
+import { updateContactCompanySize, updateContactRole } from "@inboxzero/loops";
+import { trackOnboardingAnswer } from "@/utils/posthog";
 
 export const completedOnboardingAction = actionClientUser
   .metadata({ name: "completedOnboarding" })
@@ -18,18 +21,19 @@ export const completedOnboardingAction = actionClientUser
 
 export const saveOnboardingAnswersAction = actionClientUser
   .metadata({ name: "saveOnboardingAnswers" })
-  .schema(saveOnboardingAnswersBody)
+  .inputSchema(saveOnboardingAnswersBody)
   .action(
     async ({
       parsedInput: { surveyId, questions, answers },
-      ctx: { userId },
+      ctx: { userId, userEmail, logger },
     }) => {
-      // Helper function to extract survey answers from the response format
+      // biome-ignore lint/suspicious/noExplicitAny: existing loose external shape
       function extractSurveyAnswers(questions: any[], answers: any) {
         const result: {
           surveyFeatures?: string[];
           surveyRole?: string;
           surveyGoal?: string;
+          surveyCompanySize?: number;
           surveySource?: string;
           surveyImprovements?: string;
         } = {};
@@ -83,6 +87,14 @@ export const saveOnboardingAnswersAction = actionClientUser
           result.surveyGoal = goalAnswer;
         }
 
+        const companySizeAnswer = getAnswerByKey("company_size");
+        if (companySizeAnswer && companySizeAnswer !== "undefined") {
+          const numericValue = Number(companySizeAnswer);
+          if (!Number.isNaN(numericValue)) {
+            result.surveyCompanySize = numericValue;
+          }
+        }
+
         const sourceAnswer = getAnswerByKey("source");
         if (sourceAnswer && sourceAnswer !== "undefined") {
           result.surveySource = sourceAnswer;
@@ -96,7 +108,6 @@ export const saveOnboardingAnswersAction = actionClientUser
         return result;
       }
 
-      // Extract individual survey answers for easier querying
       const extractedAnswers = extractSurveyAnswers(questions, answers);
 
       await prisma.user.update({
@@ -106,16 +117,47 @@ export const saveOnboardingAnswersAction = actionClientUser
           surveyFeatures: extractedAnswers.surveyFeatures,
           surveyRole: extractedAnswers.surveyRole,
           surveyGoal: extractedAnswers.surveyGoal,
+          surveyCompanySize: extractedAnswers.surveyCompanySize,
           surveySource: extractedAnswers.surveySource,
           surveyImprovements: extractedAnswers.surveyImprovements,
         },
+      });
+
+      after(async () => {
+        await Promise.all([
+          extractedAnswers.surveyRole
+            ? updateContactRole({
+                email: userEmail,
+                role: extractedAnswers.surveyRole,
+              }).catch((error) => {
+                logger.error("Loops: Error updating role", { error });
+              })
+            : null,
+          extractedAnswers.surveyCompanySize
+            ? updateContactCompanySize({
+                email: userEmail,
+                companySize: extractedAnswers.surveyCompanySize,
+              }).catch((error) => {
+                logger.error("Loops: Error updating company size", { error });
+              })
+            : null,
+          Object.keys(extractedAnswers).length > 0
+            ? trackOnboardingAnswer(userEmail, extractedAnswers).catch(
+                (error) => {
+                  logger.error("PostHog: Error tracking onboarding answers", {
+                    error,
+                  });
+                },
+              )
+            : null,
+        ]);
       });
     },
   );
 
 export const saveOnboardingFeaturesAction = actionClientUser
   .metadata({ name: "saveOnboardingFeatures" })
-  .schema(saveOnboardingFeaturesSchema)
+  .inputSchema(saveOnboardingFeaturesSchema)
   .action(async ({ ctx: { userId }, parsedInput: { features } }) => {
     await prisma.user.update({
       where: { id: userId },

@@ -1,25 +1,31 @@
 import { z } from "zod";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
 import type { EmailForLLM } from "@/utils/types";
-import { stringifyEmail } from "@/utils/stringify-email";
-import { getModel } from "@/utils/llms/model";
+import { getModelForUseCase, LlmUseCase } from "@/utils/llms/use-cases";
 import { createGenerateObject } from "@/utils/llms";
-import { createScopedLogger } from "@/utils/logger";
-
-const logger = createScopedLogger("ai-detect-recurring-pattern");
+import type { Logger } from "@/utils/logger";
+import {
+  getEmailListPrompt,
+  getUserInfoPrompt,
+  getUserRulesPrompt,
+} from "@/utils/ai/helpers";
 
 // const braintrust = new Braintrust("recurring-pattern-detection");
 
 const schema = z.object({
-  matchedRule: z.string().nullish(),
+  matchedRule: z.string().nullable(),
   explanation: z.string(),
 });
 export type DetectPatternResult = z.infer<typeof schema>;
+
+const MAX_PATTERN_SAMPLE_EMAILS = 10;
 
 export async function aiDetectRecurringPattern({
   emails,
   emailAccount,
   rules,
+  consistentRuleName,
+  logger,
 }: {
   emails: EmailForLLM[];
   emailAccount: EmailAccountWithAI;
@@ -27,6 +33,8 @@ export async function aiDetectRecurringPattern({
     name: string;
     instructions: string;
   }[];
+  consistentRuleName?: string;
+  logger: Logger;
 }): Promise<DetectPatternResult | null> {
   // Extract the sender email from the first email
   // All emails should be from the same sender
@@ -34,52 +42,56 @@ export async function aiDetectRecurringPattern({
 
   if (!senderEmail) return null;
 
+  if (emails.length > MAX_PATTERN_SAMPLE_EMAILS) {
+    logger.info("Truncating sender pattern history for prompt", {
+      emailCount: emails.length,
+      sampledEmailCount: MAX_PATTERN_SAMPLE_EMAILS,
+    });
+  }
+
   const system = `You are an AI assistant that helps analyze if a sender's emails should consistently be matched to a specific rule.
 
 <instructions>
 Your task is to determine if emails from a specific sender should ALWAYS be matched to the same rule.
 
-Analyze the email content to determine if this sender ALWAYS matches a specific rule.
-Only return a matchedRule if you're 100% confident all future emails from this sender will serve the same purpose; otherwise return null.
+${consistentRuleName ? `IMPORTANT: Historical data shows that ALL previous emails from this sender have been matched to the "${consistentRuleName}" rule. Your task is to verify if this pattern should be learned for future emails.` : ""}
 
-A sender should only be matched to a rule if you are HIGHLY CONFIDENT (>80%) that:
+Analyze the email content to determine if this sender ALWAYS matches a specific rule.
+Only return a matchedRule if you're 90%+ confident all future emails from this sender will serve the same purpose; otherwise return null.
+
+A sender should only be matched to a rule if you are HIGHLY CONFIDENT that:
 - All future emails from this sender will serve the same purpose
 - The purpose clearly aligns with one specific rule
 - There's a consistent pattern across all sample emails provided
+${consistentRuleName ? `- The content justifies always matching to the "${consistentRuleName}" rule` : ""}
 
 Examples of senders that typically match a single rule:
 - invoice@stripe.com → receipt rule (always sends payment confirmations)
 - newsletter@substack.com → newsletter rule (always sends newsletters)
-- noreply@linkedin.com → social rule (always job or connection notifications)
+- noreply@linkedin.com → notification rule (always sends platform notifications)
+- calendar@calendly.com → calendar rule (always sends calendar invites)
 
-Pay close attention to the ACTUAL CONTENT of the sample emails provided. The decision should be based primarily on content analysis, not just the sender's email pattern.
+Examples of senders that should NOT have learned patterns:
+- personal emails (john@gmail.com) → content varies too much
+
+Pay close attention to:
+1. The sender's email domain - generic domains (gmail.com, outlook.com) rarely warrant pattern learning
+2. The ACTUAL CONTENT of emails - must be consistently about the same topic/purpose
+3. The sender's role - service-specific emails are good candidates, personal emails are not
 
 Be conservative in your matching. If there's any doubt, return null for "matchedRule".
 </instructions>
 
-<user_rules>
-${rules
-  .map(
-    (rule) => `<rule>
-  <name>${rule.name}</name>
-  <criteria>${rule.instructions}</criteria>
-</rule>`,
-  )
-  .join("\n")}
-</user_rules>
+${getUserRulesPrompt({ rules })}
 
-${
-  emailAccount.about
-    ? `<user_info>\n<about>${emailAccount.about}</about>\n<email>${emailAccount.email}</email>\n</user_info>`
-    : `<user_info>\n<email>${emailAccount.email}</email>\n</user_info>`
-}
+${getUserInfoPrompt({ emailAccount })}
 
 <outputFormat>
 Respond with a JSON object with the following fields:
 - "matchedRule": string or null - the name of the existing rule that should handle all emails from this sender
 - "explanation": string - one sentence explanation of why this rule does or doesn't match
 
-If you're not confident (at least 80% certain) that a single rule should handle all emails from this sender, return null for matchedRule.
+If you're not confident (at least 90% certain) that a single rule should handle all emails from this sender, return null for "matchedRule".
 </outputFormat>`;
 
   const prompt = `Analyze these emails and determine if they consistently match a rule:
@@ -87,22 +99,24 @@ If you're not confident (at least 80% certain) that a single rule should handle 
 <sender>${senderEmail}</sender>
 
 <sample_emails>
-${emails
-  .map((email) => {
-    return `<email>
-${stringifyEmail(email, 500)}
-</email>`;
-  })
-  .join("\n")}
+${getEmailListPrompt({
+  messages: emails,
+  messageMaxLength: 500,
+  maxMessages: MAX_PATTERN_SAMPLE_EMAILS,
+})}
 </sample_emails>`;
 
   try {
-    const modelOptions = getModel(emailAccount.user, "chat");
+    const modelOptions = getModelForUseCase(
+      emailAccount.user,
+      LlmUseCase.DetectRecurringPattern,
+    );
 
     const generateObject = createGenerateObject({
-      userEmail: emailAccount.email,
+      emailAccount,
       label: "Detect recurring pattern",
       modelOptions,
+      promptHardening: { trust: "untrusted", level: "compact" },
     });
 
     const aiResponse = await generateObject({

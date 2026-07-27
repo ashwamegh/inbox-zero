@@ -2,9 +2,39 @@ import {
   useFeatureFlagEnabled,
   useFeatureFlagVariantKey,
 } from "posthog-js/react";
+import { env } from "@/env";
 
 export function useCleanerEnabled() {
-  return useFeatureFlagEnabled("inbox-cleaner");
+  const posthogEnabled = useFeatureFlagEnabled("inbox-cleaner");
+  return env.NEXT_PUBLIC_CLEANER_ENABLED || posthogEnabled;
+}
+
+export function useFollowUpRemindersEnabled() {
+  const posthogEnabled = useFeatureFlagEnabled("follow-up-reminders");
+  return env.NEXT_PUBLIC_FOLLOW_UP_REMINDERS_ENABLED || posthogEnabled;
+}
+
+export function useMeetingBriefsEnabled() {
+  return env.NEXT_PUBLIC_MEETING_BRIEFS_ENABLED;
+}
+
+export function useIntegrationsEnabled() {
+  const posthogEnabled = useFeatureFlagEnabled("integrations");
+  return env.NEXT_PUBLIC_INTEGRATIONS_ENABLED || posthogEnabled;
+}
+
+export function useSmartFilingEnabled() {
+  const posthogEnabled = useFeatureFlagEnabled("smart-filing");
+  return env.NEXT_PUBLIC_SMART_FILING_ENABLED || posthogEnabled;
+}
+
+export function useBookingLinksEnabled() {
+  const posthogEnabled = useFeatureFlagEnabled("booking-links");
+  return env.NEXT_PUBLIC_BOOKING_LINKS_ENABLED || posthogEnabled;
+}
+
+export function useTeamsEnabled() {
+  return useFeatureFlagEnabled("microsoft-teams");
 }
 
 const HERO_FLAG_NAME = "hero-copy-7";
@@ -38,11 +68,6 @@ export function usePricingFrequencyDefault() {
   );
 }
 
-export function useDelayedActionsEnabled() {
-  return true;
-  // return useFeatureFlagEnabled("delayed-actions");
-}
-
 export type TestimonialsVariant = "control" | "senja-widget";
 
 export function useTestimonialsVariant() {
@@ -52,20 +77,12 @@ export function useTestimonialsVariant() {
   );
 }
 
-export type OnboardingVariant = "control" | "new-onboarding";
+export type WelcomePricingVariant = "control" | "two-tiers";
 
-export function useOnboardingVariant() {
+export function useWelcomePricingVariant() {
   return (
-    (useFeatureFlagVariantKey("onboarding-flow") as OnboardingVariant) ||
-    "control"
-  );
-}
-
-export type PricingCopyVariant = "control" | "free-trial-emphasis";
-
-export function usePricingCopyVariant() {
-  return (
-    (useFeatureFlagVariantKey("pricing-copy") as PricingCopyVariant) ||
-    "control"
+    (useFeatureFlagVariantKey(
+      "welcome-pricing-tiers",
+    ) as WelcomePricingVariant) || "control"
   );
 }

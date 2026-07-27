@@ -8,25 +8,18 @@ import {
   PlusIcon,
   HistoryIcon,
   Trash2Icon,
-  ToggleRightIcon,
-  ToggleLeftIcon,
-  InfoIcon,
   SparklesIcon,
-  EyeIcon,
+  CopyIcon,
 } from "lucide-react";
 import { useMemo } from "react";
 import { LoadingContent } from "@/components/LoadingContent";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-} from "@/components/ui/card";
+import { Card, CardDescription, CardHeader } from "@/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -37,208 +30,179 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { setRuleEnabledAction } from "@/utils/actions/ai-rule";
-import { deleteRuleAction } from "@/utils/actions/rule";
-import { conditionsToString } from "@/utils/condition";
+import { Switch } from "@/components/ui/switch";
+import { deleteRuleAction, toggleRuleAction } from "@/utils/actions/rule";
+import { setMemberOrganizationRuleEnabledAction } from "@/utils/actions/organization-rule";
 import { Badge } from "@/components/Badge";
-import { getActionColor } from "@/components/PlanBadge";
-import { toastError, toastSuccess } from "@/components/Toast";
 import { Tooltip } from "@/components/Tooltip";
+import { getActionColor } from "@/components/PlanBadge";
+import { toastError } from "@/components/Toast";
 import { useRules } from "@/hooks/useRules";
-import { ActionType, ColdEmailSetting, LogicalOperator } from "@prisma/client";
+import { LogicalOperator } from "@/generated/prisma/enums";
+import type { ActionType } from "@/generated/prisma/client";
 import { useAction } from "next-safe-action/hooks";
 import { useAccount } from "@/providers/EmailAccountProvider";
 import { prefixPath } from "@/utils/path";
-import { ExpandableText } from "@/components/ExpandableText";
-import { useEmailAccountFull } from "@/hooks/useEmailAccountFull";
 import type { RulesResponse } from "@/app/api/user/rules/route";
-import { inboxZeroLabels } from "@/utils/label";
-import { isDefined } from "@/utils/types";
-import { useAssistantNavigation } from "@/hooks/useAssistantNavigation";
-import { getActionDisplay } from "@/utils/action-display";
+import {
+  getActionDisplay,
+  getActionIcon,
+  getVisibleActions,
+} from "@/utils/action-display";
 import { RuleDialog } from "./RuleDialog";
 import { useDialogState } from "@/hooks/useDialogState";
-import { ColdEmailDialog } from "@/app/(app)/[emailAccountId]/cold-email-blocker/ColdEmailDialog";
 import { useChat } from "@/providers/ChatProvider";
 import { useSidebar } from "@/components/ui/sidebar";
+import { useLabels } from "@/hooks/useLabels";
+import { conditionsToString } from "@/utils/condition";
+import { TruncatedTooltipText } from "@/components/TruncatedTooltipText";
 import {
-  isGoogleProvider,
-  isMicrosoftProvider,
-} from "@/utils/email/provider-types";
-
-const COLD_EMAIL_BLOCKER_RULE_ID = "cold-email-blocker-rule";
+  getRuleConfig,
+  SYSTEM_RULE_ORDER,
+  getDefaultActions,
+} from "@/utils/rule/consts";
+import { sortRulesForAutomation } from "@/utils/rule/sort";
+import {
+  STEP_KEYS,
+  getOnboardingStepHref,
+} from "@/app/(app)/[emailAccountId]/onboarding/onboardingFlow";
 
 export function Rules({
-  size = "md",
   showAddRuleButton = true,
 }: {
-  size?: "sm" | "md";
   showAddRuleButton?: boolean;
 }) {
   const { data, isLoading, error, mutate } = useRules();
   const { setOpen } = useSidebar();
   const { setInput } = useChat();
-  const { data: emailAccountData } = useEmailAccountFull();
-  const ruleDialog = useDialogState<{ ruleId: string; editMode?: boolean }>();
-  const coldEmailDialog = useDialogState();
 
+  const { userLabels } = useLabels();
+  const ruleDialog = useDialogState<{
+    ruleId?: string;
+    editMode?: boolean;
+    duplicateRule?: RulesResponse[number];
+  }>();
   const onCreateRule = () => ruleDialog.onOpen();
 
   const { emailAccountId, provider } = useAccount();
-  const { createAssistantUrl } = useAssistantNavigation(emailAccountId);
-  const { executeAsync: setRuleEnabled } = useAction(
-    setRuleEnabledAction.bind(null, emailAccountId),
-    {
-      onSettled: () => mutate(),
-    },
+  const { executeAsync: toggleRule } = useAction(
+    toggleRuleAction.bind(null, emailAccountId),
   );
-  const { executeAsync: deleteRule } = useAction(
-    deleteRuleAction.bind(null, emailAccountId),
-    {
-      onSettled: () => mutate(),
-    },
+  const { executeAsync: toggleMemberOrgRule } = useAction(
+    setMemberOrganizationRuleEnabledAction.bind(null, emailAccountId),
   );
 
-  const baseRules: RulesResponse = useMemo(() => {
-    return (
-      data?.sort((a, b) => (b.enabled ? 1 : 0) - (a.enabled ? 1 : 0)) || []
+  const handleToggle = async (
+    rule: RulesResponse[number],
+    enabled: boolean,
+  ) => {
+    const isOrgManaged = !!rule.organizationRuleId;
+    const isSystemRule = !!rule.systemType;
+
+    mutate(
+      data?.map((r) => {
+        if (isOrgManaged) {
+          return r.id === rule.id
+            ? { ...r, organizationRuleMemberEnabled: enabled, enabled }
+            : r;
+        }
+        if (isSystemRule) {
+          return r.systemType === rule.systemType ? { ...r, enabled } : r;
+        }
+        return r.id === rule.id ? { ...r, enabled } : r;
+      }),
+      { revalidate: false },
     );
-  }, [data]);
+
+    const result = isOrgManaged
+      ? await toggleMemberOrgRule({ ruleId: rule.id, enabled })
+      : await toggleRule({
+          ruleId: isSystemRule ? undefined : rule.id,
+          systemType: rule.systemType || undefined,
+          enabled,
+        });
+
+    if (result?.serverError) {
+      toastError({
+        description: `There was an error ${enabled ? "enabling" : "disabling"} the rule. ${result.serverError || ""}`,
+      });
+    }
+
+    mutate();
+  };
 
   const rules: RulesResponse = useMemo(() => {
-    const enabled: ColdEmailSetting[] = [
-      ColdEmailSetting.LABEL,
-      ColdEmailSetting.ARCHIVE_AND_LABEL,
-      ColdEmailSetting.ARCHIVE_AND_READ_AND_LABEL,
-    ];
+    const existingRules = data || [];
 
-    const shouldArchived: ColdEmailSetting[] = [
-      ColdEmailSetting.ARCHIVE_AND_LABEL,
-      ColdEmailSetting.ARCHIVE_AND_READ_AND_LABEL,
-    ];
+    const systemRulePlaceholders = SYSTEM_RULE_ORDER.map((systemType) => {
+      const existingRule = existingRules.find(
+        (r) => r.systemType === systemType,
+      );
+      if (existingRule) return existingRule;
 
-    const coldEmailBlockerEnabled =
-      emailAccountData?.coldEmailBlocker &&
-      enabled.includes(emailAccountData?.coldEmailBlocker);
+      const ruleConfiguration = getRuleConfig(systemType);
 
-    if (!coldEmailBlockerEnabled) return baseRules;
+      return {
+        id: `placeholder-${systemType}`,
+        name: ruleConfiguration.name,
+        instructions: ruleConfiguration.instructions,
+        enabled: false,
+        runOnThreads: false,
+        automate: true,
+        actions: getDefaultActions(systemType, provider).map((action) => ({
+          ...action,
+          emailAccountId,
+          messagingChannelEmailAccountId: null,
+        })),
+        group: null,
+        emailAccountId: emailAccountId,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        categoryFilterType: null,
+        conditionalOperator: LogicalOperator.OR,
+        groupId: null,
+        systemType,
+        to: null,
+        from: null,
+        subject: null,
+        body: null,
+        promptText: null,
+        organizationRuleId: null,
+        organizationRuleMemberEnabled: null,
+        organizationRule: null,
+      };
+    });
 
-    const showArchiveAction =
-      emailAccountData?.coldEmailBlocker &&
-      shouldArchived.includes(emailAccountData?.coldEmailBlocker);
+    const userRules = existingRules.filter((rule) => !rule.systemType);
 
-    // Works differently to rules, but we want to show it in the list for user simplicity
-    const coldEmailBlockerRule: RulesResponse[number] = {
-      id: COLD_EMAIL_BLOCKER_RULE_ID,
-      name: "Cold Emails",
-      instructions: emailAccountData?.coldEmailPrompt || null,
-      automate: true,
-      enabled: true,
-      runOnThreads: false,
-      actions: [
-        isGoogleProvider(provider)
-          ? {
-              id: "cold-email-blocker-label",
-              type: ActionType.LABEL,
-              label: inboxZeroLabels.cold_email.name.split("/")[1],
-              createdAt: new Date(),
-              updatedAt: new Date(),
-              ruleId: COLD_EMAIL_BLOCKER_RULE_ID,
-              to: null,
-              subject: null,
-              content: null,
-              cc: null,
-              bcc: null,
-              url: null,
-              folderName: null,
-              folderId: null,
-              delayInMinutes: null,
-            }
-          : null,
-        showArchiveAction
-          ? {
-              id: "cold-email-blocker-archive",
-              type: isMicrosoftProvider(provider)
-                ? ActionType.MOVE_FOLDER
-                : ActionType.ARCHIVE,
-              label: null,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-              ruleId: COLD_EMAIL_BLOCKER_RULE_ID,
-              to: null,
-              subject: null,
-              content: null,
-              cc: null,
-              bcc: null,
-              url: null,
-              folderName: null,
-              folderId: null,
-              delayInMinutes: null,
-            }
-          : null,
-        emailAccountData?.coldEmailDigest
-          ? {
-              id: "cold-email-blocker-digest",
-              type: ActionType.DIGEST,
-              label: null,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-              ruleId: COLD_EMAIL_BLOCKER_RULE_ID,
-              to: null,
-              subject: null,
-              content: null,
-              cc: null,
-              bcc: null,
-              url: null,
-              folderName: null,
-              folderId: null,
-              delayInMinutes: null,
-            }
-          : null,
-      ].filter(isDefined),
-      categoryFilters: [],
-      group: null,
-      emailAccountId: emailAccountId,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      categoryFilterType: null,
-      conditionalOperator: LogicalOperator.OR,
-      groupId: null,
-      systemType: null,
-      to: null,
-      from: null,
-      subject: null,
-      body: null,
-      promptText: null,
-    };
-    return [...(baseRules || []), coldEmailBlockerRule];
-  }, [baseRules, emailAccountData, emailAccountId, provider]);
+    return sortRulesForAutomation([...systemRulePlaceholders, ...userRules]);
+  }, [data, emailAccountId, provider]);
 
   const hasRules = !!rules?.length;
 
   return (
-    <div>
+    <div className="space-y-6">
       <Card>
         <LoadingContent loading={isLoading} error={error}>
           {hasRules ? (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  {size === "md" && <TableHead>Condition</TableHead>}
-                  <TableHead>Action</TableHead>
-                  {/* {size === "md" && (
-                    <TableHead>
-                      <div className="flex items-center justify-center gap-1">
-                        <span>Threads</span>
-                        <ThreadsExplanation size="sm" />
-                      </div>
-                    </TableHead>
-                  )} */}
-                  <TableHead>
+                  <TableHead className="w-16 px-2 sm:px-4">Enabled</TableHead>
+                  <TableHead className="px-2 sm:px-4">Name</TableHead>
+                  <TableHead className="hidden sm:table-cell px-2 sm:px-4">
+                    Prompt
+                  </TableHead>
+                  <TableHead className="px-2 sm:px-4">Action</TableHead>
+                  <TableHead className="w-fit whitespace-nowrap px-1">
                     {showAddRuleButton && (
                       <div className="flex justify-end">
-                        <AddRuleButton onClick={onCreateRule} />
+                        <div className="my-2">
+                          <Button size="sm" onClick={onCreateRule}>
+                            <PlusIcon className="mr-2 hidden size-4 md:block" />
+                            Add Rule
+                          </Button>
+                        </div>
                       </div>
                     )}
                   </TableHead>
@@ -246,245 +210,198 @@ export function Rules({
               </TableHeader>
               <TableBody>
                 {rules.map((rule) => {
-                  const isColdEmailBlocker =
-                    rule.id === COLD_EMAIL_BLOCKER_RULE_ID;
+                  const isPlaceholder = rule.id.startsWith("placeholder-");
+                  const isOrgManaged = !!rule.organizationRuleId;
+                  const isDisabledByOrg =
+                    isOrgManaged && rule.organizationRule?.enabled === false;
 
                   return (
                     <TableRow
                       key={rule.id}
-                      className={!rule.enabled ? "bg-muted opacity-60" : ""}
+                      className={`${!rule.enabled ? "bg-muted opacity-60" : ""} ${
+                        isPlaceholder || isOrgManaged
+                          ? "cursor-default"
+                          : "cursor-pointer"
+                      }`}
+                      onClick={() => {
+                        if (isPlaceholder || isOrgManaged) return;
+                        ruleDialog.onOpen({ ruleId: rule.id, editMode: false });
+                      }}
                     >
-                      <TableCell className="font-medium">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (isColdEmailBlocker) {
-                              coldEmailDialog.onOpen();
-                            } else {
-                              ruleDialog.onOpen({
-                                ruleId: rule.id,
-                                editMode: false,
-                              });
-                            }
-                          }}
-                          className="flex items-center gap-2 text-left hover:underline"
+                      <TableCell
+                        onClick={(e) => e.stopPropagation()}
+                        className="text-center p-2 sm:p-4"
+                      >
+                        <Tooltip
+                          content="Disabled by your organization"
+                          hide={!isDisabledByOrg}
                         >
-                          {!rule.enabled && (
-                            <Badge color="red" className="mr-2">
-                              Disabled
-                            </Badge>
-                          )}
+                          <span>
+                            <Switch
+                              size="sm"
+                              checked={rule.enabled}
+                              disabled={isDisabledByOrg}
+                              onCheckedChange={(enabled) =>
+                                handleToggle(rule, enabled)
+                              }
+                            />
+                          </span>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell className="font-medium p-2 sm:p-4">
+                        <div className="flex items-center gap-2">
                           {rule.name}
-                          {!rule.automate && (
-                            <Tooltip content="Actions for matched emails will require manual approval in the 'Pending' tab. You can change this in the rule settings by clicking this badge.">
-                              <Badge
-                                color="yellow"
-                                className="ml-auto text-nowrap"
-                              >
-                                Requires Approval
-                                <InfoIcon className="ml-1.5 size-3" />
-                              </Badge>
+                          {isOrgManaged && (
+                            <Tooltip content="Managed by Organization">
+                              <Badge color="blue">Org</Badge>
                             </Tooltip>
                           )}
-                        </button>
+                        </div>
                       </TableCell>
-                      {size === "md" && (
-                        <TableCell>
-                          <ExpandableText
-                            text={conditionsToString(rule)}
-                            className="max-w-xs"
-                          />
-                        </TableCell>
-                      )}
-                      <TableCell>
+                      <TableCell className="hidden sm:table-cell p-2 sm:p-4">
+                        <TruncatedTooltipText
+                          text={conditionsToString(rule)}
+                          maxLength={50}
+                          className="max-w-xs"
+                        />
+                      </TableCell>
+                      <TableCell className="p-2 sm:p-4">
                         <ActionBadges
                           actions={rule.actions}
                           provider={provider}
+                          labels={userLabels}
                         />
                       </TableCell>
-                      {/* {size === "md" && (
-                        <TableCell>
-                          <div className="flex justify-center">
-                            <Toggle
-                              enabled={rule.runOnThreads}
-                              name="runOnThreads"
-                              onChange={async () => {
-                                if (isColdEmailBlocker) return;
-
-                                const result = await setRuleRunOnThreads({
-                                  ruleId: rule.id,
-                                  runOnThreads: !rule.runOnThreads,
-                                });
-
-                                if (result?.serverError) {
-                                  toastError({
-                                    description: `There was an error updating your rule. ${result.serverError || ""}`,
-                                  });
-                                }
-                                mutate();
-                              }}
-                            />
-                          </div>
-                        </TableCell>
-                      )} */}
-                      <TableCell className="text-center">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              aria-haspopup="true"
-                              size="icon"
-                              variant="ghost"
-                            >
-                              <MoreHorizontalIcon className="size-4" />
-                              <span className="sr-only">Toggle menu</span>
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem
-                              onClick={() => {
-                                if (isColdEmailBlocker) {
-                                  coldEmailDialog.onOpen();
-                                } else {
-                                  ruleDialog.onOpen({
-                                    ruleId: rule.id,
-                                    editMode: false,
-                                  });
-                                }
-                              }}
-                            >
-                              <EyeIcon className="mr-2 size-4" />
-                              View
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => {
-                                if (isColdEmailBlocker) {
-                                  coldEmailDialog.onOpen();
-                                } else {
-                                  ruleDialog.onOpen({
-                                    ruleId: rule.id,
-                                    editMode: true,
-                                  });
-                                }
-                              }}
-                            >
-                              <PenIcon className="mr-2 size-4" />
-                              Edit manually
-                            </DropdownMenuItem>
-                            {!isColdEmailBlocker && (
-                              <DropdownMenuItem
-                                onClick={() => {
-                                  setInput(
-                                    `I'd like to edit the "${rule.name}" rule:\n`,
-                                  );
-                                  setOpen((arr) => [...arr, "chat-sidebar"]);
-                                }}
+                      <TableCell className="w-fit whitespace-nowrap text-center px-1 py-2">
+                        {!isPlaceholder && (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                aria-haspopup="true"
+                                size="icon"
+                                variant="ghost"
+                                onClick={(e) => e.stopPropagation()}
                               >
-                                <SparklesIcon className="mr-2 size-4" />
-                                Edit via AI
-                              </DropdownMenuItem>
-                            )}
-                            <DropdownMenuItem asChild>
-                              <Link
-                                href={
-                                  isColdEmailBlocker
-                                    ? prefixPath(
-                                        emailAccountId,
-                                        "/cold-email-blocker",
-                                      )
-                                    : createAssistantUrl({
-                                        tab: "history",
+                                <MoreHorizontalIcon className="size-4" />
+                                <span className="sr-only">Toggle menu</span>
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent
+                              align="end"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {!isOrgManaged && (
+                                <>
+                                  <DropdownMenuItem
+                                    onClick={() => {
+                                      ruleDialog.onOpen({
                                         ruleId: rule.id,
-                                        path: "/automation?tab=history",
-                                      })
-                                }
-                                target={
-                                  isColdEmailBlocker ? "_blank" : undefined
-                                }
-                              >
-                                <HistoryIcon className="mr-2 size-4" />
-                                History
-                              </Link>
-                            </DropdownMenuItem>
-                            {!isColdEmailBlocker && (
-                              <>
-                                <DropdownMenuItem
-                                  onClick={async () => {
-                                    const result = await setRuleEnabled({
-                                      ruleId: rule.id,
-                                      enabled: !rule.enabled,
-                                    });
-
-                                    if (result?.serverError) {
-                                      toastError({
-                                        description: `There was an error ${
-                                          rule.enabled
-                                            ? "disabling"
-                                            : "enabling"
-                                        } your rule. ${result.serverError || ""}`,
+                                        editMode: true,
                                       });
-                                    } else {
-                                      toastSuccess({
-                                        description: `Rule ${
-                                          rule.enabled ? "disabled" : "enabled"
-                                        }!`,
+                                    }}
+                                  >
+                                    <PenIcon className="mr-2 size-4" />
+                                    Edit manually
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onClick={() => {
+                                      setInput(
+                                        `I'd like to edit the "${rule.name}" rule:\n`,
+                                      );
+                                      setOpen((arr) => [
+                                        ...arr,
+                                        "chat-sidebar",
+                                      ]);
+                                    }}
+                                  >
+                                    <SparklesIcon className="mr-2 size-4" />
+                                    Edit via AI
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onClick={() => {
+                                      ruleDialog.onOpen({
+                                        duplicateRule: rule,
                                       });
-                                    }
-
-                                    mutate();
-                                  }}
-                                >
-                                  {rule.enabled ? (
-                                    <ToggleRightIcon className="mr-2 size-4" />
-                                  ) : (
-                                    <ToggleLeftIcon className="mr-2 size-4" />
+                                    }}
+                                  >
+                                    <CopyIcon className="mr-2 size-4" />
+                                    Duplicate
+                                  </DropdownMenuItem>
+                                </>
+                              )}
+                              <DropdownMenuItem asChild>
+                                <Link
+                                  href={prefixPath(
+                                    emailAccountId,
+                                    `/automation?tab=history&ruleId=${rule.id}`,
                                   )}
-                                  {rule.enabled ? "Disable" : "Enable"}
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={async () => {
-                                    const yes = confirm(
-                                      `Are you sure you want to delete the rule "${rule.name}"?`,
-                                    );
-                                    if (yes) {
-                                      toast.promise(
-                                        async () => {
-                                          const res = await deleteRule({
-                                            id: rule.id,
-                                          });
+                                >
+                                  <HistoryIcon className="mr-2 size-4" />
+                                  History
+                                </Link>
+                              </DropdownMenuItem>
+                              {!rule.systemType && !isOrgManaged && (
+                                <>
+                                  <DropdownMenuSeparator />
 
-                                          if (
-                                            res?.serverError ||
-                                            res?.validationErrors ||
-                                            res?.bindArgsValidationErrors
-                                          ) {
-                                            throw new Error(
-                                              res?.serverError ||
-                                                "There was an error deleting your rule",
+                                  <DropdownMenuItem
+                                    onClick={async () => {
+                                      const yes = confirm(
+                                        `Are you sure you want to delete the rule "${rule.name}"?`,
+                                      );
+                                      if (yes) {
+                                        toast.promise(
+                                          async () => {
+                                            const res = await deleteRuleAction(
+                                              emailAccountId,
+                                              { id: rule.id },
                                             );
-                                          }
 
-                                          mutate();
-                                        },
-                                        {
-                                          loading: "Deleting rule...",
-                                          success: "Rule deleted",
-                                          error: (error) =>
-                                            `Error deleting rule. ${error.message}`,
-                                          finally: () => {
+                                            if (
+                                              res?.serverError ||
+                                              res?.validationErrors
+                                            ) {
+                                              throw new Error(
+                                                res?.serverError ||
+                                                  "There was an error deleting your rule",
+                                              );
+                                            }
+
+                                            mutate(
+                                              (currentRules) =>
+                                                currentRules?.filter(
+                                                  (currentRule) =>
+                                                    currentRule.id !== rule.id,
+                                                ),
+                                              { revalidate: false },
+                                            );
                                             mutate();
                                           },
-                                        },
-                                      );
-                                    }
-                                  }}
-                                >
-                                  <Trash2Icon className="mr-2 size-4" />
-                                  Delete
-                                </DropdownMenuItem>
-                              </>
-                            )}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                                          {
+                                            loading: "Deleting rule...",
+                                            success: "Rule deleted",
+                                            error: (error: unknown) =>
+                                              `Error deleting rule. ${
+                                                error instanceof Error
+                                                  ? error.message
+                                                  : "There was an error deleting your rule"
+                                              }`,
+                                            finally: () => {
+                                              mutate();
+                                            },
+                                          },
+                                        );
+                                      }
+                                    }}
+                                  >
+                                    <Trash2Icon className="mr-2 size-4" />
+                                    Delete
+                                  </DropdownMenuItem>
+                                </>
+                              )}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        )}
                       </TableCell>
                     </TableRow>
                   );
@@ -492,13 +409,14 @@ export function Rules({
               </TableBody>
             </Table>
           ) : (
-            <NoRules onCreateRule={onCreateRule} />
+            <NoRules />
           )}
         </LoadingContent>
       </Card>
 
       <RuleDialog
         ruleId={ruleDialog.data?.ruleId}
+        duplicateRule={ruleDialog.data?.duplicateRule}
         isOpen={ruleDialog.isOpen}
         onClose={ruleDialog.onClose}
         onSuccess={() => {
@@ -507,11 +425,6 @@ export function Rules({
         }}
         editMode={ruleDialog.data?.editMode}
       />
-
-      <ColdEmailDialog
-        isOpen={coldEmailDialog.isOpen}
-        onClose={coldEmailDialog.onClose}
-      />
     </div>
   );
 }
@@ -519,28 +432,35 @@ export function Rules({
 export function ActionBadges({
   actions,
   provider,
+  labels,
 }: {
   actions: {
     id: string;
     type: ActionType;
     label?: string | null;
+    labelId?: string | null;
     folderName?: string | null;
+    content?: string | null;
+    to?: string | null;
   }[];
   provider: string;
+  labels: Array<{ id: string; name: string }>;
 }) {
+  const visibleActions = getVisibleActions(actions);
+
   return (
-    <div className="flex gap-2">
-      {actions.map((action) => {
-        // Hidden for simplicity
-        if (action.type === ActionType.TRACK_THREAD) return null;
+    <div className="flex gap-1 sm:gap-2 flex-wrap min-w-0 justify-start">
+      {visibleActions.map((action) => {
+        const Icon = getActionIcon(action.type);
 
         return (
           <Badge
             key={action.id}
             color={getActionColor(action.type)}
-            className="w-fit text-nowrap"
+            className="w-fit sm:text-nowrap shrink-0"
           >
-            {getActionDisplay(action, provider)}
+            <Icon className="size-3 mr-1.5 hidden sm:block" />
+            {getActionDisplay(action, provider, labels)}
           </Badge>
         );
       })}
@@ -548,31 +468,23 @@ export function ActionBadges({
   );
 }
 
-function NoRules({ onCreateRule }: { onCreateRule: () => void }) {
-  return (
-    <>
-      <CardHeader>
-        <CardDescription>
-          You don't have any rules yet.
-          <br />
-          You can teach your AI assistant how to handle your emails by chatting
-          with it or create rules manually.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <AddRuleButton onClick={onCreateRule} />
-      </CardContent>
-    </>
-  );
-}
+function NoRules() {
+  const { emailAccountId } = useAccount();
 
-function AddRuleButton({ onClick }: { onClick: () => void }) {
   return (
-    <div className="my-2">
-      <Button size="sm" onClick={onClick}>
-        <PlusIcon className="mr-2 hidden size-4 md:block" />
-        Add Rule
-      </Button>
-    </div>
+    <CardHeader>
+      <CardDescription className="flex flex-col items-center gap-4 py-20">
+        You don't have any rules yet.
+        <div>
+          <Button asChild size="sm">
+            <Link
+              href={getOnboardingStepHref(emailAccountId, STEP_KEYS.LABELS)}
+            >
+              Set up default rules
+            </Link>
+          </Button>
+        </div>
+      </CardDescription>
+    </CardHeader>
   );
 }

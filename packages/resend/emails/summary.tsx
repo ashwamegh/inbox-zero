@@ -21,25 +21,31 @@ type EmailItem = {
   sentAt: Date;
 };
 
+type ArchivedEmailItem = EmailItem & {
+  ruleName: string;
+};
+
 export interface SummaryEmailProps {
-  baseUrl: string;
-  pendingCount: number;
-  coldEmailers: EmailItem[];
-  // Reply tracker stats
-  needsReplyCount?: number;
+  archivedEmailCount?: number;
+  archivedEmails?: ArchivedEmailItem[];
+  awaitingReply?: EmailItem[];
   awaitingReplyCount?: number;
+  baseUrl: string;
+  coldEmailers: EmailItem[];
+  needsAction?: EmailItem[];
   needsActionCount?: number;
   needsReply?: EmailItem[];
-  awaitingReply?: EmailItem[];
-  needsAction?: EmailItem[];
+  // Reply tracker stats
+  needsReplyCount?: number;
   unsubscribeToken: string;
 }
 
 export default function SummaryEmail(props: SummaryEmailProps) {
   const {
     baseUrl = "https://www.getinboxzero.com",
+    archivedEmailCount = 0,
+    archivedEmails = [],
     coldEmailers,
-    pendingCount,
     needsReplyCount,
     awaitingReplyCount,
     needsActionCount,
@@ -83,6 +89,12 @@ export default function SummaryEmail(props: SummaryEmailProps) {
               </Text>
             </Section>
 
+            <ArchivedEmails
+              archivedEmailCount={archivedEmailCount}
+              archivedEmails={archivedEmails}
+              baseUrl={baseUrl}
+            />
+
             <ReplyTracker
               needsReplyCount={needsReplyCount ?? 0}
               awaitingReplyCount={awaitingReplyCount ?? 0}
@@ -95,8 +107,6 @@ export default function SummaryEmail(props: SummaryEmailProps) {
 
             <ColdEmails coldEmailers={coldEmailers} baseUrl={baseUrl} />
 
-            <PendingEmails pendingCount={pendingCount} baseUrl={baseUrl} />
-
             <Footer baseUrl={baseUrl} unsubscribeToken={unsubscribeToken} />
           </Container>
         </Body>
@@ -107,7 +117,27 @@ export default function SummaryEmail(props: SummaryEmailProps) {
 
 SummaryEmail.PreviewProps = {
   baseUrl: "https://www.getinboxzero.com",
-  pendingCount: 23,
+  archivedEmailCount: 8,
+  archivedEmails: [
+    {
+      from: "Updates <updates@example.com>",
+      subject: "New product features this week",
+      sentAt: new Date("2024-03-20"),
+      ruleName: "Marketing",
+    },
+    {
+      from: "Newsletter <newsletter@example.com>",
+      subject: "Weekly industry roundup",
+      sentAt: new Date("2024-03-19"),
+      ruleName: "Newsletter",
+    },
+    {
+      from: "Sales <sales@example.com>",
+      subject: "Quick question",
+      sentAt: new Date("2024-03-18"),
+      ruleName: "Cold Email",
+    },
+  ],
   coldEmailers: [
     {
       from: "James <james@example.com>",
@@ -162,8 +192,61 @@ SummaryEmail.PreviewProps = {
   unsubscribeToken: "123",
 } satisfies SummaryEmailProps;
 
-function pluralize(count: number, word: string) {
-  return count === 1 ? word : `${word}s`;
+function ArchivedEmails({
+  archivedEmailCount,
+  archivedEmails,
+  baseUrl,
+}: {
+  archivedEmailCount: number;
+  archivedEmails: ArchivedEmailItem[];
+  baseUrl: string;
+}) {
+  if (!archivedEmailCount) return null;
+
+  const archivedEmailGroups = groupArchivedEmailsByRule(archivedEmails);
+  const hiddenCount = Math.max(archivedEmailCount - archivedEmails.length, 0);
+
+  return (
+    <Section className="my-6 rounded-2xl bg-[#10b981]/5 bg-[radial-gradient(circle_at_bottom_right,#10b981_0%,transparent_60%)] p-8 text-center">
+      <Heading className="m-0 text-3xl font-medium text-[#047857]">
+        Archived For You
+      </Heading>
+      <Text className="my-4 text-5xl font-bold text-gray-900">
+        {archivedEmailCount}
+      </Text>
+      <Text className="mb-4 text-xl text-gray-900">emails this week</Text>
+
+      {archivedEmailGroups.map((group) => (
+        <div key={group.ruleName}>
+          <Text className="mt-6 mb-2 text-left text-sm font-semibold uppercase tracking-wide text-[#047857]">
+            {group.ruleName}
+          </Text>
+          <EmailList description="" emails={group.emails} />
+        </div>
+      ))}
+
+      {hiddenCount > 0 && (
+        <Text className="mt-4 text-sm text-gray-600">
+          And {hiddenCount} more archived email
+          {hiddenCount === 1 ? "" : "s"}.
+        </Text>
+      )}
+
+      <Section className="text-center mt-[32px] mb-[32px]">
+        <Button
+          href={`${baseUrl}/automation?tab=history`}
+          style={{
+            background: "#000",
+            color: "#fff",
+            padding: "12px 20px",
+            borderRadius: "5px",
+          }}
+        >
+          View Automation History
+        </Button>
+      </Section>
+    </Section>
+  );
 }
 
 function ReplyTracker({
@@ -299,42 +382,6 @@ function ColdEmails({
   );
 }
 
-function PendingEmails({
-  pendingCount,
-  baseUrl,
-}: {
-  pendingCount: number;
-  baseUrl: string;
-}) {
-  if (!pendingCount) return null;
-
-  return (
-    <Section className="my-6 rounded-2xl bg-[#22c55e]/5 bg-[radial-gradient(circle_at_bottom_right,#22c55e_0%,transparent_60%)] p-8 text-center">
-      <Heading className="m-0 text-3xl font-medium text-[#166534]">
-        Pending Emails
-      </Heading>
-      <Text className="my-4 text-lg leading-5 text-gray-900">
-        You have {pendingCount} {pluralize(pendingCount, "email")} from your AI
-        assistant pending approval.
-      </Text>
-
-      <Section className="text-center mt-[32px] mb-[32px]">
-        <Button
-          href={`${baseUrl}/automation?tab=pending`}
-          style={{
-            background: "#000",
-            color: "#fff",
-            padding: "12px 20px",
-            borderRadius: "5px",
-          }}
-        >
-          View Pending
-        </Button>
-      </Section>
-    </Section>
-  );
-}
-
 function Footer({
   baseUrl,
   unsubscribeToken,
@@ -403,4 +450,16 @@ function EmailList({
       ))}
     </div>
   );
+}
+
+function groupArchivedEmailsByRule(archivedEmails: ArchivedEmailItem[]) {
+  const groups = new Map<string, EmailItem[]>();
+
+  archivedEmails.forEach(({ ruleName, ...email }) => {
+    const emails = groups.get(ruleName) || [];
+    emails.push(email);
+    groups.set(ruleName, emails);
+  });
+
+  return Array.from(groups, ([ruleName, emails]) => ({ ruleName, emails }));
 }

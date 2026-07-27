@@ -1,8 +1,9 @@
 "use client";
 
+import type { MouseEvent } from "react";
 import { useState } from "react";
 import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
-import { motion } from "framer-motion";
+import { motion } from "motion/react";
 import { cn } from "@/utils";
 
 export function ExpandableText({
@@ -42,7 +43,10 @@ export function ExpandableText({
 
       <motion.button
         type="button"
-        onClick={() => setIsExpanded(!isExpanded)}
+        onClick={(e: MouseEvent<HTMLButtonElement>) => {
+          e.stopPropagation();
+          setIsExpanded(!isExpanded);
+        }}
         className="mt-1 flex items-center text-xs text-muted-foreground hover:text-primary"
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.95 }}

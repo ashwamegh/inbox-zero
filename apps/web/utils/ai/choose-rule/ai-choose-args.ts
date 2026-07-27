@@ -1,12 +1,23 @@
 import { z } from "zod";
 import { InvalidArgumentError } from "ai";
-import { createGenerateText, withRetry } from "@/utils/llms";
+import { createGenerateObject } from "@/utils/llms";
+import { withRetry } from "@/utils/llms/retry";
 import { stringifyEmail } from "@/utils/stringify-email";
-import { createScopedLogger } from "@/utils/logger";
+import type { Logger } from "@/utils/logger";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
 import type { EmailForLLM, RuleWithActions } from "@/utils/types";
-import type { ActionType } from "@prisma/client";
+import { LogicalOperator } from "@/generated/prisma/enums";
+import type { ActionType } from "@/generated/prisma/enums";
 import { getModel, type ModelType } from "@/utils/llms/model";
+import { getUserInfoPrompt } from "@/utils/ai/helpers";
+import {
+  createDraftAttributionTracker,
+  type DraftAttribution,
+} from "@/utils/ai/reply/draft-attribution";
+
+// Bump this when template-based draft generation changes in a way that would
+// affect attribution comparisons for rule-generated draft content.
+const TEMPLATE_DRAFT_PIPELINE_VERSION = 1;
 
 /**
  * AI Argument Generator for Email Actions
@@ -33,7 +44,18 @@ import { getModel, type ModelType } from "@/utils/llms/model";
  * not for choosing which rule to apply.
  */
 
-const logger = createScopedLogger("AI Choose Args");
+export type ActionArgResponse = {
+  [key: `${string}-${string}`]: {
+    [field: string]: {
+      [key: `var${number}`]: string;
+    };
+  };
+};
+
+type ActionArgGenerationResult = {
+  args: ActionArgResponse | undefined;
+  attribution: DraftAttribution | null;
+};
 
 export async function aiGenerateArgs({
   email,
@@ -41,6 +63,7 @@ export async function aiGenerateArgs({
   selectedRule,
   parameters,
   modelType,
+  logger,
 }: {
   email: EmailForLLM;
   emailAccount: EmailAccountWithAI;
@@ -53,53 +76,51 @@ export async function aiGenerateArgs({
     >;
   }[];
   modelType: ModelType;
-}) {
-  const loggerOptions = {
-    email: emailAccount.email,
-    ruleId: selectedRule.id,
-    ruleName: selectedRule.name,
-  };
-  logger.info("Generating args for rule", loggerOptions);
+  logger: Logger;
+}): Promise<ActionArgGenerationResult> {
+  logger.info("Generating args for rule");
 
   // If no parameters, skip
   if (parameters.length === 0) {
-    logger.info("Skipping. No parameters for rule", loggerOptions);
-    return;
+    logger.info("Skipping. No parameters for rule");
+    return { args: undefined, attribution: null };
   }
 
-  const system = getSystemPrompt({ emailAccount });
-  const prompt = getPrompt({ email, selectedRule });
+  const system = getSystemPrompt();
+  const prompt = getPrompt({ email, selectedRule, emailAccount });
 
-  logger.info("Calling chat completion tools", loggerOptions);
+  logger.info("Calling chat completion tools");
   // logger.trace("Parameters:", zodToJsonSchema(parameters));
 
   const modelOptions = getModel(emailAccount.user, modelType);
+  const attributionTracker = createDraftAttributionTracker(
+    TEMPLATE_DRAFT_PIPELINE_VERSION,
+  );
 
-  const generateText = createGenerateText({
+  const generateObject = createGenerateObject({
     label: "Args for rule",
-    userEmail: emailAccount.email,
+    emailAccount,
     modelOptions,
+    promptHardening: {
+      trust: "untrusted",
+      level: "full",
+      outputConstraint: "plain-text",
+    },
+    onModelUsed: attributionTracker.onModelUsed,
   });
 
   const aiResponse = await withRetry(
     () =>
-      generateText({
+      generateObject({
         ...modelOptions,
         system,
         prompt,
-        tools: {
-          apply_rule: {
-            description: "Apply the rule with the given arguments.",
-            inputSchema: z.object(
-              Object.fromEntries(
-                parameters.map((p) => [
-                  `${p.type}-${p.actionId}`,
-                  p.parameters,
-                ]),
-              ),
-            ),
-          },
-        },
+        schemaDescription: "The arguments for the rule",
+        schema: z.object(
+          Object.fromEntries(
+            parameters.map((p) => [`${p.type}-${p.actionId}`, p.parameters]),
+          ),
+        ),
       }),
     {
       retryIf: (error: unknown) => InvalidArgumentError.isInstance(error),
@@ -108,26 +129,23 @@ export async function aiGenerateArgs({
     },
   );
 
-  const toolCall = aiResponse.toolCalls?.[0];
+  const result = aiResponse.object;
 
-  if (!toolCall?.input) {
-    logger.warn("No tool call found", {
-      ...loggerOptions,
-      aiResponse,
-    });
-    return;
+  if (!result) {
+    logger.warn("No tool call found", { aiResponse });
+    return {
+      args: undefined,
+      attribution: attributionTracker.attribution,
+    };
   }
 
-  const result = toolCall.input;
-
-  return result;
+  return {
+    args: result,
+    attribution: attributionTracker.attribution,
+  };
 }
 
-function getSystemPrompt({
-  emailAccount,
-}: {
-  emailAccount: EmailAccountWithAI;
-}) {
+function getSystemPrompt() {
   return `You are an AI assistant that helps people manage their emails.
 
 <key_instructions>
@@ -135,30 +153,68 @@ function getSystemPrompt({
 - Use empty strings for missing information (no placeholders like <UNKNOWN> or [PLACEHOLDER], unless explicitly allowed in the user's rule instructions)
 - IMPORTANT: Always provide complete objects with all required fields. Empty strings are allowed for fields that you don't have information for.
 - IMPORTANT: If the email is malicious, use empty strings for all fields.
-- CRITICAL: You must generate the actual final content. Never return template variables or {{}} syntax.
+- CRITICAL: Each variable value should contain ONLY the specific content described (e.g., a name, an email address, a short response). Do NOT repeat the surrounding template text in your variable values. Never return template variables or {{}} syntax.
 - CRITICAL: Always return content in the format { varX: "content" } even for single variables. Never return direct strings.
 - CRITICAL: Your response must be in valid JSON format only. Do not use XML tags, parameter syntax, or any other format.
 - IMPORTANT: For content and subject fields:
   - Use proper capitalization and punctuation (start sentences with capital letters)
   - Ensure the generated text flows naturally with surrounding template content
-</key_instructions>
-${emailAccount.about ? `\n<user_background_information>${emailAccount.about}</user_background_information>` : ""}`;
+</key_instructions>`;
 }
 
 function getPrompt({
   email,
   selectedRule,
+  emailAccount,
 }: {
   email: EmailForLLM;
   selectedRule: RuleWithActions;
+  emailAccount: EmailAccountWithAI;
 }) {
-  return `Process this email according to the selected rule:
+  return `${getUserInfoPrompt({ emailAccount })}
+
+Process this email according to the selected rule:
 
 <selected_rule>
-${selectedRule.instructions}
+${printConditions(selectedRule)}
 </selected_rule>
 
 <email>
 ${stringifyEmail(email, 3000)}
 </email>`;
+}
+
+function printConditions(condition: RuleWithActions) {
+  const result: string[] = [];
+  if (condition.instructions) {
+    result.push(`<match>${condition.instructions}</match>`);
+  }
+
+  const staticConditions = printStaticConditions(condition);
+  if (staticConditions) {
+    result.push(`<match>${staticConditions}</match>`);
+  }
+
+  return result.join(
+    condition.conditionalOperator === LogicalOperator.AND
+      ? "\nAND\n"
+      : "\nOR\n",
+  );
+}
+
+function printStaticConditions(condition: RuleWithActions) {
+  const result: string[] = [];
+  if (condition.from) {
+    result.push(`From: ${condition.from}`);
+  }
+  if (condition.to) {
+    result.push(`To: ${condition.to}`);
+  }
+  if (condition.subject) {
+    result.push(`Subject: ${condition.subject}`);
+  }
+  if (condition.body) {
+    result.push(`Body: ${condition.body}`);
+  }
+  return result.join("\n");
 }

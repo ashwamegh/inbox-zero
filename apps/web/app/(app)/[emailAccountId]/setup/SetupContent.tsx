@@ -1,16 +1,27 @@
 "use client";
 
+import { cn } from "@/utils";
+import { useCallback, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { useAction } from "next-safe-action/hooks";
 import {
   ArchiveIcon,
   CheckIcon,
-  MailIcon,
-  BanIcon,
   BotIcon,
   type LucideIcon,
-  ChromeIcon,
+  CalendarIcon,
+  GlobeIcon,
+  UsersIcon,
+  MessageSquareIcon,
+  InboxIcon,
+  Loader2Icon,
 } from "lucide-react";
-import { PageHeading, SectionDescription } from "@/components/Typography";
+import {
+  MutedText,
+  PageHeading,
+  SectionDescription,
+} from "@/components/Typography";
 import { Card } from "@/components/ui/card";
 import { prefixPath } from "@/utils/path";
 import { useSetupProgress } from "@/hooks/useSetupProgress";
@@ -18,80 +29,103 @@ import { LoadingContent } from "@/components/LoadingContent";
 import { EXTENSION_URL } from "@/utils/config";
 import { isGoogleProvider } from "@/utils/email/provider-types";
 import { useAccount } from "@/providers/EmailAccountProvider";
+import {
+  STEP_KEYS,
+  getOnboardingStepHref,
+} from "@/app/(app)/[emailAccountId]/onboarding/onboardingFlow";
+import { InviteMemberModal } from "@/components/InviteMemberModal";
+import { BRAND_NAME } from "@/utils/branding";
+import { dismissHintAction } from "@/utils/actions/hints";
+import { toastError } from "@/components/Toast";
+
+type DismissibleSetupStep =
+  | "aiAssistant"
+  | "bulkUnsubscribe"
+  | "calendarConnected"
+  | "teamInvite"
+  | "tabsExtension";
 
 function FeatureCard({
   emailAccountId,
   href,
   icon: Icon,
-  iconBg,
-  iconColor,
   title,
   description,
 }: {
   emailAccountId: string;
   href: `/${string}`;
   icon: LucideIcon;
-  iconBg: string;
-  iconColor: string;
   title: string;
   description: string;
 }) {
   return (
     <Link href={prefixPath(emailAccountId, href)} className="block">
       <div className="h-full rounded-lg p-6 shadow transition-shadow hover:bg-muted/50 hover:shadow-md">
-        <div
-          className={`mb-4 inline-flex h-10 w-10 items-center justify-center rounded-full ${iconBg}`}
-        >
-          <Icon className={`h-5 w-5 ${iconColor}`} />
+        <div className="mb-2 flex items-center gap-3">
+          <div
+            className={cn(
+              "inline-flex rounded-lg bg-gradient-to-b p-px shadow-sm",
+              "from-new-blue-150 to-new-blue-200",
+            )}
+          >
+            <div
+              className={cn(
+                "flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[7px] bg-gradient-to-b shadow-sm transition-transform",
+                "from-new-blue-50 to-new-blue-100",
+              )}
+            >
+              <Icon className={cn("h-4 w-4", "text-new-blue-600")} />
+            </div>
+          </div>
+          <h3 className="text-lg font-medium text-foreground">{title}</h3>
         </div>
-        <h3 className="mb-2 text-lg font-medium text-foreground">{title}</h3>
-        <p className="text-sm text-muted-foreground">{description}</p>
+        <MutedText>{description}</MutedText>
       </div>
     </Link>
   );
 }
 
-const features = [
-  {
-    href: "/automation",
-    icon: BotIcon,
-    iconBg: "bg-green-100 dark:bg-green-900/50",
-    iconColor: "text-green-600 dark:text-green-400",
-    title: "AI Assistant",
-    description:
-      "Your personal email assistant that organizes, archives, and drafts replies",
-  },
-  {
-    href: "/bulk-unsubscribe",
-    icon: ArchiveIcon,
-    iconBg: "bg-purple-100 dark:bg-purple-900/50",
-    iconColor: "text-purple-600 dark:text-purple-400",
-    title: "Bulk Unsubscribe",
-    description: "Easily unsubscribe from unwanted newsletters in one click",
-  },
-  {
-    href: "/reply-zero",
-    icon: MailIcon,
-    iconBg: "bg-blue-100 dark:bg-blue-900/50",
-    iconColor: "text-blue-600 dark:text-blue-400",
-    title: "Reply Zero",
-    description:
-      "Track emails needing replies & follow-ups. Get AI-drafted responses",
-  },
-  {
-    href: "/cold-email-blocker",
-    icon: BanIcon,
-    iconBg: "bg-orange-100 dark:bg-orange-900/50",
-    iconColor: "text-orange-600 dark:text-orange-400",
-    title: "Cold Email Blocker",
-    description: "Filter out unsolicited messages and keep your inbox clean",
-  },
-] as const;
+function getFeatures() {
+  const features = [
+    {
+      href: "/assistant",
+      icon: MessageSquareIcon,
+      title: "Chat",
+      description: "Chat with your inbox to find information and take actions",
+    },
+    {
+      href: "/automation",
+      icon: BotIcon,
+      title: "Assistant",
+      description:
+        "Your personal email assistant that organizes, archives, and drafts replies",
+    },
+    {
+      href: "/bulk-unsubscribe",
+      icon: ArchiveIcon,
+      title: "Bulk Unsubscribe",
+      description: "Easily unsubscribe from unwanted newsletters in one click",
+    },
+    {
+      href: "/bulk-archive",
+      icon: InboxIcon,
+      title: "Bulk Archive",
+      description: "Quickly clean up your inbox by archiving old emails",
+    },
+  ] as const;
 
-function FeatureGrid({ emailAccountId }: { emailAccountId: string }) {
+  return features;
+}
+
+function FeatureGrid({
+  emailAccountId,
+}: {
+  emailAccountId: string;
+  provider: string;
+}) {
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4">
-      {features.map((feature) => (
+      {getFeatures().map((feature) => (
         <FeatureCard
           key={feature.href}
           emailAccountId={emailAccountId}
@@ -105,36 +139,62 @@ function FeatureGrid({ emailAccountId }: { emailAccountId: string }) {
 const StepItem = ({
   href,
   icon,
-  iconBg,
-  iconColor,
   title,
   timeEstimate,
   completed,
   actionText,
   linkProps,
+  onMarkDone,
+  showMarkDone,
+  markDoneText = "Mark Done",
+  markDoneDisabled,
+  markDonePending,
+  onActionClick,
 }: {
   href: string;
   icon: React.ReactNode;
-  iconBg: string;
-  iconColor: string;
   title: string;
   timeEstimate: string;
-  completed: boolean;
+  completed?: boolean;
   actionText: string;
   linkProps?: { target?: string; rel?: string };
+  onMarkDone?: () => void;
+  showMarkDone?: boolean;
+  markDoneText?: string;
+  markDoneDisabled?: boolean;
+  markDonePending?: boolean;
+  onActionClick?: () => void;
 }) => {
+  const handleMarkDone = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onMarkDone?.();
+  };
+
   return (
-    <Link
+    <div
       className={`border-b border-border last:border-0 ${completed ? "opacity-60" : ""}`}
-      href={href}
-      {...linkProps}
     >
       <div className="flex items-center justify-between gap-8 p-4">
-        <div className="flex max-w-lg items-center">
+        <Link
+          href={href}
+          {...linkProps}
+          className="flex max-w-lg min-w-0 flex-1 items-center rounded-md -m-2 p-2 transition-colors hover:bg-muted/40"
+        >
           <div
-            className={`size-10 ${iconBg} mr-3 flex flex-shrink-0 items-center justify-center rounded-full`}
+            className={cn(
+              "p-px rounded-lg shadow-sm bg-gradient-to-b mr-3 flex flex-shrink-0 items-center justify-center",
+              "from-new-blue-150 to-new-blue-200",
+            )}
           >
-            <div className={iconColor}>{icon}</div>
+            <div
+              className={cn(
+                "flex h-9 w-9 items-center justify-center rounded-[7px] bg-gradient-to-b shadow-sm",
+                "from-new-blue-50 to-new-blue-100",
+              )}
+            >
+              <div className="text-new-blue-600">{icon}</div>
+            </div>
           </div>
           <div>
             <h3 className="font-medium text-foreground">{title}</h3>
@@ -142,9 +202,9 @@ const StepItem = ({
               {timeEstimate}
             </p>
           </div>
-        </div>
+        </Link>
 
-        <div className="flex items-center">
+        <div className="flex items-center gap-2">
           {completed ? (
             <div className="flex size-6 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/50">
               <CheckIcon
@@ -153,13 +213,45 @@ const StepItem = ({
               />
             </div>
           ) : (
-            <div className="rounded-md bg-blue-100 px-3 py-1 text-sm text-blue-600 hover:bg-blue-200 dark:bg-blue-900/50 dark:text-blue-400 dark:hover:bg-blue-900/75">
-              {actionText}
-            </div>
+            <>
+              {onActionClick ? (
+                <button
+                  type="button"
+                  onClick={onActionClick}
+                  className="rounded-md bg-blue-100 px-3 py-1 text-sm text-blue-600 hover:bg-blue-200 dark:bg-blue-900/50 dark:text-blue-400 dark:hover:bg-blue-900/75"
+                >
+                  {actionText}
+                </button>
+              ) : (
+                <Link
+                  href={href}
+                  {...linkProps}
+                  className="rounded-md bg-blue-100 px-3 py-1 text-sm text-blue-600 hover:bg-blue-200 dark:bg-blue-900/50 dark:text-blue-400 dark:hover:bg-blue-900/75"
+                >
+                  {actionText}
+                </Link>
+              )}
+
+              {showMarkDone && (
+                <button
+                  type="button"
+                  onClick={handleMarkDone}
+                  disabled={markDoneDisabled}
+                  title={markDoneText}
+                  className="flex size-6 items-center justify-center rounded-full bg-slate-100 text-slate-400 transition-colors hover:bg-green-100 hover:text-green-600 dark:bg-slate-800 dark:text-slate-500 dark:hover:bg-green-900/50 dark:hover:text-green-400"
+                >
+                  {markDonePending ? (
+                    <Loader2Icon size={14} className="animate-spin" />
+                  ) : (
+                    <CheckIcon size={14} />
+                  )}
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>
-    </Link>
+    </div>
   );
 };
 
@@ -168,20 +260,72 @@ function Checklist({
   provider,
   completedCount,
   totalSteps,
-  progressPercentage,
-  isReplyTrackerConfigured,
   isBulkUnsubscribeConfigured,
   isAiAssistantConfigured,
+  isCalendarConnected,
+  showCalendarStep,
+  isTabsExtensionCompleted,
+  teamInvite,
+  onSetupProgressChanged,
 }: {
   emailAccountId: string;
   provider: string;
   completedCount: number;
   totalSteps: number;
-  progressPercentage: number;
-  isReplyTrackerConfigured: boolean;
   isBulkUnsubscribeConfigured: boolean;
   isAiAssistantConfigured: boolean;
+  isCalendarConnected: boolean;
+  showCalendarStep: boolean;
+  isTabsExtensionCompleted: boolean;
+  teamInvite: {
+    completed: boolean;
+    organizationId: string | undefined;
+  } | null;
+  onSetupProgressChanged: (stepKey: DismissibleSetupStep) => void;
 }) {
+  const { executeAsync: dismissSetupStep, isExecuting: isDismissingStep } =
+    useAction(dismissHintAction);
+  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+  const [pendingStep, setPendingStep] = useState<DismissibleSetupStep | null>(
+    null,
+  );
+  const progressPercentage = (completedCount / totalSteps) * 100;
+
+  const handleMarkStepDone = useCallback(
+    async (stepKey: DismissibleSetupStep) => {
+      if (isDismissingStep) {
+        return;
+      }
+
+      setPendingStep(stepKey);
+
+      try {
+        const result = await dismissSetupStep({
+          hintId: `setup:${stepKey}:${emailAccountId}`,
+        });
+
+        if (result?.serverError || result?.validationErrors) {
+          toastError({ description: "Failed to skip this step" });
+          return;
+        }
+
+        onSetupProgressChanged(stepKey);
+      } finally {
+        setPendingStep(null);
+      }
+    },
+    [
+      dismissSetupStep,
+      emailAccountId,
+      isDismissingStep,
+      onSetupProgressChanged,
+    ],
+  );
+
+  const handleOpenInviteModal = () => {
+    setIsInviteModalOpen(true);
+  };
+
   return (
     <Card className="mb-6 overflow-hidden">
       <div className="border-b border-border p-4">
@@ -202,49 +346,85 @@ function Checklist({
       </div>
 
       <StepItem
-        href={prefixPath(emailAccountId, "/assistant/onboarding")}
-        icon={<BotIcon size={20} />}
-        iconBg="bg-green-100 dark:bg-green-900/50"
-        iconColor="text-green-500 dark:text-green-400"
+        href={getOnboardingStepHref(emailAccountId, STEP_KEYS.LABELS)}
+        icon={<BotIcon size={18} />}
         title="Set up your Personal Assistant"
         timeEstimate="5 minutes"
         completed={isAiAssistantConfigured}
         actionText="Set up"
+        onMarkDone={() => handleMarkStepDone("aiAssistant")}
+        showMarkDone
+        markDoneDisabled={isDismissingStep}
+        markDonePending={pendingStep === "aiAssistant"}
       />
 
       <StepItem
         href={prefixPath(emailAccountId, "/bulk-unsubscribe")}
-        icon={<ArchiveIcon size={20} />}
-        iconBg="bg-purple-100 dark:bg-purple-900/50"
-        iconColor="text-purple-500 dark:text-purple-400"
-        title="Unsubscribe from emails you don't read"
-        timeEstimate="5 minutes"
+        icon={<ArchiveIcon size={18} />}
+        title="Unsubscribe from a newsletter you don't read"
+        timeEstimate="2 minutes"
         completed={isBulkUnsubscribeConfigured}
         actionText="View"
+        onMarkDone={() => handleMarkStepDone("bulkUnsubscribe")}
+        showMarkDone
+        markDoneDisabled={isDismissingStep}
+        markDonePending={pendingStep === "bulkUnsubscribe"}
       />
 
-      <StepItem
-        href={prefixPath(emailAccountId, "/reply-zero")}
-        icon={<MailIcon size={20} />}
-        iconBg="bg-blue-100 dark:bg-blue-900/50"
-        iconColor="text-blue-500 dark:text-blue-400"
-        title="View emails needing replies"
-        timeEstimate="30 seconds"
-        completed={isReplyTrackerConfigured}
-        actionText="View"
-      />
+      {showCalendarStep && (
+        <StepItem
+          href={prefixPath(emailAccountId, "/calendars")}
+          icon={<CalendarIcon size={18} />}
+          title="Connect your calendar"
+          timeEstimate="2 minutes"
+          completed={isCalendarConnected}
+          actionText="Connect"
+          onMarkDone={() => handleMarkStepDone("calendarConnected")}
+          showMarkDone
+          markDoneDisabled={isDismissingStep}
+          markDonePending={pendingStep === "calendarConnected"}
+        />
+      )}
+
+      {teamInvite && (
+        <StepItem
+          href={prefixPath(emailAccountId, "/organization")}
+          icon={<UsersIcon size={18} />}
+          title="Invite team members"
+          timeEstimate="2 minutes"
+          completed={teamInvite.completed}
+          actionText="Invite"
+          onMarkDone={() => handleMarkStepDone("teamInvite")}
+          markDoneDisabled={isDismissingStep}
+          markDonePending={pendingStep === "teamInvite"}
+          showMarkDone
+          markDoneText="Skip"
+          onActionClick={handleOpenInviteModal}
+        />
+      )}
+
+      {teamInvite && (
+        <InviteMemberModal
+          organizationId={teamInvite.organizationId}
+          open={isInviteModalOpen}
+          onOpenChange={setIsInviteModalOpen}
+          trigger={null}
+        />
+      )}
 
       {isGoogleProvider(provider) && (
         <StepItem
           href={EXTENSION_URL}
           linkProps={{ target: "_blank", rel: "noopener noreferrer" }}
-          icon={<ChromeIcon size={20} />}
-          iconBg="bg-orange-100 dark:bg-orange-900/50"
-          iconColor="text-orange-500 dark:text-orange-400"
-          title="Install the Inbox Zero Tabs extension"
+          icon={<GlobeIcon size={18} />}
+          title={`Optional: Install the ${BRAND_NAME} Tabs extension`}
           timeEstimate="1 minute"
-          completed={false}
+          completed={isTabsExtensionCompleted}
           actionText="Install"
+          onMarkDone={() => handleMarkStepDone("tabsExtension")}
+          markDoneDisabled={isDismissingStep}
+          markDonePending={pendingStep === "tabsExtension"}
+          showMarkDone={true}
         />
       )}
     </Card>
@@ -253,7 +433,21 @@ function Checklist({
 
 export function SetupContent() {
   const { emailAccountId, provider } = useAccount();
-  const { data, isLoading, error } = useSetupProgress();
+  const { data, isLoading, error, mutate } = useSetupProgress();
+  const searchParams = useSearchParams();
+  const forceSetupMode = searchParams.get("forceSetup") === "1";
+  const handleSetupProgressChanged = useCallback(
+    (stepKey: DismissibleSetupStep) => {
+      mutate(
+        (currentData) =>
+          currentData
+            ? getUpdatedSetupProgress(currentData, stepKey)
+            : currentData,
+        { revalidate: true },
+      );
+    },
+    [mutate],
+  );
 
   return (
     <LoadingContent loading={isLoading} error={error}>
@@ -261,12 +455,17 @@ export function SetupContent() {
         <SetupPageContent
           emailAccountId={emailAccountId}
           provider={provider}
-          isReplyTrackerConfigured={data.steps.replyTracker}
           isAiAssistantConfigured={data.steps.aiAssistant}
           isBulkUnsubscribeConfigured={data.steps.bulkUnsubscribe}
+          isCalendarConnected={data.steps.calendarConnected}
+          showCalendarStep={data.showCalendarStep}
+          isTabsExtensionCompleted={data.tabsExtensionCompleted}
           completedCount={data.completed}
           totalSteps={data.total}
           isSetupComplete={data.isComplete}
+          forceSetupMode={forceSetupMode}
+          teamInvite={data.teamInvite}
+          onSetupProgressChanged={handleSetupProgressChanged}
         />
       )}
     </LoadingContent>
@@ -276,49 +475,120 @@ export function SetupContent() {
 function SetupPageContent({
   emailAccountId,
   provider,
-  isReplyTrackerConfigured,
   isBulkUnsubscribeConfigured,
   isAiAssistantConfigured,
+  isCalendarConnected,
+  showCalendarStep,
+  isTabsExtensionCompleted,
   completedCount,
   totalSteps,
   isSetupComplete,
+  forceSetupMode,
+  teamInvite,
+  onSetupProgressChanged,
 }: {
   emailAccountId: string;
   provider: string;
-  isReplyTrackerConfigured: boolean;
   isBulkUnsubscribeConfigured: boolean;
   isAiAssistantConfigured: boolean;
+  isCalendarConnected: boolean;
+  showCalendarStep: boolean;
+  isTabsExtensionCompleted: boolean;
   completedCount: number;
   totalSteps: number;
   isSetupComplete: boolean;
+  forceSetupMode: boolean;
+  teamInvite: {
+    completed: boolean;
+    organizationId: string | undefined;
+  } | null;
+  onSetupProgressChanged: (stepKey: DismissibleSetupStep) => void;
 }) {
-  const progressPercentage = (completedCount / totalSteps) * 100;
+  const shouldShowSetupChecklist = forceSetupMode || !isSetupComplete;
 
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-3xl flex-col p-6">
       <div className="mb-4 sm:mb-8">
-        <PageHeading className="text-center">Welcome to Inbox Zero</PageHeading>
+        <PageHeading className="text-center">{`Welcome to ${BRAND_NAME}`}</PageHeading>
         <SectionDescription className="mt-2 text-center text-base">
-          {isSetupComplete
-            ? "What would you like to do?"
-            : "Complete these steps to get the most out of Inbox Zero"}
+          {shouldShowSetupChecklist
+            ? `Complete these steps to get the most out of ${BRAND_NAME}`
+            : "What would you like to do?"}
         </SectionDescription>
       </div>
 
-      {isSetupComplete ? (
-        <FeatureGrid emailAccountId={emailAccountId} />
-      ) : (
+      {/* <StatsCardGrid /> */}
+
+      {shouldShowSetupChecklist ? (
         <Checklist
           emailAccountId={emailAccountId}
           provider={provider}
-          isReplyTrackerConfigured={isReplyTrackerConfigured}
           isBulkUnsubscribeConfigured={isBulkUnsubscribeConfigured}
           isAiAssistantConfigured={isAiAssistantConfigured}
+          isCalendarConnected={isCalendarConnected}
+          showCalendarStep={showCalendarStep}
+          isTabsExtensionCompleted={isTabsExtensionCompleted}
           completedCount={completedCount}
           totalSteps={totalSteps}
-          progressPercentage={progressPercentage}
+          teamInvite={teamInvite}
+          onSetupProgressChanged={onSetupProgressChanged}
         />
+      ) : (
+        <FeatureGrid emailAccountId={emailAccountId} provider={provider} />
       )}
     </div>
   );
+}
+
+function getUpdatedSetupProgress(
+  currentData: NonNullable<ReturnType<typeof useSetupProgress>["data"]>,
+  stepKey: DismissibleSetupStep,
+) {
+  if (stepKey === "tabsExtension") {
+    return currentData.tabsExtensionCompleted
+      ? currentData
+      : { ...currentData, tabsExtensionCompleted: true };
+  }
+
+  const nextSteps = { ...currentData.steps };
+  let completedIncrement = 0;
+
+  if (stepKey === "teamInvite") {
+    if (!currentData.teamInvite || currentData.teamInvite.completed) {
+      return currentData;
+    }
+
+    completedIncrement = 1;
+
+    return {
+      ...currentData,
+      completed: Math.min(
+        currentData.completed + completedIncrement,
+        currentData.total,
+      ),
+      isComplete:
+        currentData.completed + completedIncrement >= currentData.total,
+      teamInvite: {
+        ...currentData.teamInvite,
+        completed: true,
+      },
+    };
+  }
+
+  if (nextSteps[stepKey]) {
+    return currentData;
+  }
+
+  nextSteps[stepKey] = true;
+  completedIncrement = 1;
+
+  return {
+    ...currentData,
+    steps: nextSteps,
+    completed: Math.min(
+      currentData.completed + completedIncrement,
+      currentData.total,
+    ),
+    isComplete: currentData.completed + completedIncrement >= currentData.total,
+  };
 }

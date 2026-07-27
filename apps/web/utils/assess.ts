@@ -4,14 +4,18 @@ import type { EmailProvider } from "@/utils/email/types";
 import { GmailProvider } from "@/utils/email/google";
 import { getEmailClient } from "@/utils/mail";
 import { isDefined } from "@/utils/types";
-import { createScopedLogger } from "@/utils/logger";
+import type { Logger } from "@/utils/logger";
 import { GmailLabel } from "@/utils/gmail/label";
-import { OutlookLabel } from "@/utils/outlook/label";
+import { OutlookLabel } from "@/utils/outlook/constants";
 import { getFilters, getForwardingAddresses } from "@/utils/gmail/settings";
 
-const logger = createScopedLogger("utils/assess");
-
-export async function assessUser({ client }: { client: EmailProvider }) {
+export async function assessUser({
+  client,
+  logger,
+}: {
+  client: EmailProvider;
+  logger: Logger;
+}) {
   // how many unread emails?
   const unreadCount = await getUnreadEmailCount(client);
   // how many unarchived emails?
@@ -29,14 +33,17 @@ export async function assessUser({ client }: { client: EmailProvider }) {
   // TODO
 
   // does user forward emails to other accounts?
-  const forwardingAddressesCount = await getForwardingAddressesCount(client);
+  const forwardingAddressesCount = await getForwardingAddressesCount(
+    client,
+    logger,
+  );
 
   // does user use snippets?
   // Gmail API doesn't provide a way to check this
   // TODO We could check it with embeddings
 
   // what email client does user use?
-  const emailClients = await getEmailClients(client);
+  const emailClients = await getEmailClients(client, logger);
 
   return {
     unreadCount,
@@ -59,7 +66,7 @@ async function getUnreadEmailCount(client: EmailProvider) {
   }
 }
 
-export async function getInboxCount(client: EmailProvider) {
+async function getInboxCount(client: EmailProvider) {
   if (client instanceof GmailProvider) {
     const label = await client.getLabelById(GmailLabel.INBOX);
     return label?.threadsTotal || 0;
@@ -69,7 +76,7 @@ export async function getInboxCount(client: EmailProvider) {
   }
 }
 
-export async function getUnreadCount(client: EmailProvider) {
+async function getUnreadCount(client: EmailProvider) {
   if (client instanceof GmailProvider) {
     const label = await client.getLabelById(GmailLabel.UNREAD);
     return label?.threadsTotal || 0;
@@ -102,6 +109,7 @@ async function getLabelCount(client: EmailProvider) {
 
 async function getFiltersCount(client: EmailProvider) {
   if (client instanceof GmailProvider) {
+    // biome-ignore lint/suspicious/noExplicitAny: existing loose external shape
     const gmail = (client as any).client; // Access the internal Gmail client
     const filters = await getFilters(gmail);
     return filters.length;
@@ -110,9 +118,13 @@ async function getFiltersCount(client: EmailProvider) {
   return 0;
 }
 
-async function getForwardingAddressesCount(client: EmailProvider) {
+async function getForwardingAddressesCount(
+  client: EmailProvider,
+  logger: Logger,
+) {
   if (client instanceof GmailProvider) {
     try {
+      // biome-ignore lint/suspicious/noExplicitAny: existing loose external shape
       const gmail = (client as any).client; // Access the internal Gmail client
       const forwardingAddresses = await getForwardingAddresses(gmail);
       return forwardingAddresses.length;
@@ -126,7 +138,7 @@ async function getForwardingAddressesCount(client: EmailProvider) {
   return 0;
 }
 
-async function getEmailClients(client: EmailProvider) {
+async function getEmailClients(client: EmailProvider, logger: Logger) {
   try {
     const messages = await client.getSentMessages(50);
 

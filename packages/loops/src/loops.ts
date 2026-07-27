@@ -16,19 +16,18 @@ function getLoopsClient(): LoopsClient | undefined {
 export async function createContact(
   email: string,
   firstName?: string,
+  provider?: string,
 ): Promise<{
   success: boolean;
   id?: string;
 }> {
   const loops = getLoopsClient();
   if (!loops) return { success: false };
-  // so we can run a/b tests with 2-6 groups easily
-  const abTestId = getRandomInt(60);
-  const resp = await loops.createContact({
-    email,
-    properties: firstName ? { firstName, abTestId } : { abTestId },
-  });
-  return resp;
+  const properties: Record<string, string | number> = {};
+  if (firstName) properties.firstName = firstName;
+  if (provider) properties.provider = provider;
+
+  return await loops.createContact({ email, properties });
 }
 
 export async function deleteContact(
@@ -36,8 +35,7 @@ export async function deleteContact(
 ): Promise<{ success: boolean }> {
   const loops = getLoopsClient();
   if (!loops) return { success: false };
-  const resp = await loops.deleteContact({ email });
-  return resp;
+  return await loops.deleteContact({ email });
 }
 
 export async function startedTrial(
@@ -46,13 +44,12 @@ export async function startedTrial(
 ): Promise<{ success: boolean }> {
   const loops = getLoopsClient();
   if (!loops) return { success: false };
-  const resp = await loops.sendEvent({
+  return await loops.sendEvent({
     eventName: "upgraded",
     email,
     contactProperties: { tier },
     eventProperties: { tier },
   });
-  return resp;
 }
 
 export async function completedTrial(
@@ -61,13 +58,12 @@ export async function completedTrial(
 ): Promise<{ success: boolean }> {
   const loops = getLoopsClient();
   if (!loops) return { success: false };
-  const resp = await loops.sendEvent({
+  return await loops.sendEvent({
     eventName: "completed_trial",
     email,
     contactProperties: { tier },
     eventProperties: { tier },
   });
-  return resp;
 }
 
 export async function switchedPremiumPlan(
@@ -76,13 +72,12 @@ export async function switchedPremiumPlan(
 ): Promise<{ success: boolean }> {
   const loops = getLoopsClient();
   if (!loops) return { success: false };
-  const resp = await loops.sendEvent({
+  return await loops.sendEvent({
     eventName: "switched_premium_plan",
     email,
     contactProperties: { tier },
     eventProperties: { tier },
   });
-  return resp;
 }
 
 export async function cancelledPremium(
@@ -90,14 +85,42 @@ export async function cancelledPremium(
 ): Promise<{ success: boolean }> {
   const loops = getLoopsClient();
   if (!loops) return { success: false };
-  const resp = await loops.sendEvent({
+  return await loops.sendEvent({
     eventName: "cancelled",
     email,
     contactProperties: { tier: "" },
   });
-  return resp;
 }
 
-function getRandomInt(max: number) {
-  return Math.ceil(Math.random() * max);
+async function updateContactProperty(
+  email: string,
+  properties: Record<string, string | number | boolean>,
+): Promise<{ success: boolean }> {
+  const loops = getLoopsClient();
+  if (!loops) return { success: false };
+
+  return await loops.updateContact({
+    email,
+    properties,
+  });
+}
+
+export async function updateContactRole({
+  email,
+  role,
+}: {
+  email: string;
+  role: string;
+}) {
+  return updateContactProperty(email, { role });
+}
+
+export async function updateContactCompanySize({
+  email,
+  companySize,
+}: {
+  email: string;
+  companySize: number;
+}) {
+  return updateContactProperty(email, { companySize });
 }

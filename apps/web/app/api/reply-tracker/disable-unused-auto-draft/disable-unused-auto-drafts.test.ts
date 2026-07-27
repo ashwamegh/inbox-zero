@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import prisma from "@/utils/__mocks__/prisma";
 import { disableUnusedAutoDrafts } from "./disable-unused-auto-drafts";
-import { ActionType } from "@prisma/client";
+import { ActionType, DraftEmailStatus } from "@/generated/prisma/enums";
+import { createTestLogger } from "@/__tests__/helpers";
+
+const logger = createTestLogger();
 
 vi.mock("@/utils/prisma");
-vi.mock("server-only", () => ({}));
 
 describe("disableUnusedAutoDrafts", () => {
   beforeEach(() => {
@@ -21,11 +23,11 @@ describe("disableUnusedAutoDrafts", () => {
     (prisma.action.findMany as any).mockResolvedValueOnce(autoDraftActions);
     const mockDrafts = Array.from({ length: 10 }, (_, i) => ({
       id: `exec-${i + 1}`,
-      wasDraftSent: false,
+      draftStatus: DraftEmailStatus.REPLIED_WITHOUT_DRAFT,
     }));
     (prisma.executedAction.findMany as any).mockResolvedValueOnce(mockDrafts);
 
-    const result = await disableUnusedAutoDrafts();
+    const result = await disableUnusedAutoDrafts(logger);
 
     expect(prisma.action.deleteMany).toHaveBeenCalledWith({
       where: {
@@ -47,11 +49,14 @@ describe("disableUnusedAutoDrafts", () => {
     (prisma.action.findMany as any).mockResolvedValueOnce(autoDraftActions);
     const mockDrafts = Array.from({ length: 10 }, (_, i) => ({
       id: `exec-${i + 1}`,
-      wasDraftSent: i === 5, // one is true
+      draftStatus:
+        i === 5
+          ? DraftEmailStatus.LIKELY_SENT
+          : DraftEmailStatus.REPLIED_WITHOUT_DRAFT,
     }));
     (prisma.executedAction.findMany as any).mockResolvedValueOnce(mockDrafts);
 
-    const result = await disableUnusedAutoDrafts();
+    const result = await disableUnusedAutoDrafts(logger);
 
     expect(prisma.action.deleteMany).not.toHaveBeenCalled();
     expect(result).toEqual({ usersChecked: 1, usersDisabled: 0, errors: 0 });
@@ -66,10 +71,10 @@ describe("disableUnusedAutoDrafts", () => {
     ];
     (prisma.action.findMany as any).mockResolvedValueOnce(autoDraftActions);
     (prisma.executedAction.findMany as any).mockResolvedValueOnce([
-      { id: "exec-1", wasDraftSent: false },
+      { id: "exec-1", draftStatus: DraftEmailStatus.REPLIED_WITHOUT_DRAFT },
     ]);
 
-    const result = await disableUnusedAutoDrafts();
+    const result = await disableUnusedAutoDrafts(logger);
 
     expect(prisma.action.deleteMany).not.toHaveBeenCalled();
     expect(result).toEqual({ usersChecked: 1, usersDisabled: 0, errors: 0 });
@@ -78,7 +83,7 @@ describe("disableUnusedAutoDrafts", () => {
   it("should do nothing if no users have auto-draft enabled", async () => {
     (prisma.action.findMany as any).mockResolvedValueOnce([]);
 
-    const result = await disableUnusedAutoDrafts();
+    const result = await disableUnusedAutoDrafts(logger);
 
     expect(prisma.executedAction.findMany).not.toHaveBeenCalled();
     expect(prisma.action.deleteMany).not.toHaveBeenCalled();
@@ -105,21 +110,24 @@ describe("disableUnusedAutoDrafts", () => {
           // User 1 sent a draft
           return Array.from({ length: 10 }, (_, i) => ({
             id: `exec-u1-${i}`,
-            wasDraftSent: i === 0,
+            draftStatus:
+              i === 0
+                ? DraftEmailStatus.LIKELY_SENT
+                : DraftEmailStatus.REPLIED_WITHOUT_DRAFT,
           }));
         }
         if (ruleIds.includes("rule-user-2")) {
           // User 2 did not
           return Array.from({ length: 10 }, (_, i) => ({
             id: `exec-u2-${i}`,
-            wasDraftSent: false,
+            draftStatus: DraftEmailStatus.REPLIED_WITHOUT_DRAFT,
           }));
         }
         return [];
       },
     );
 
-    const result = await disableUnusedAutoDrafts();
+    const result = await disableUnusedAutoDrafts(logger);
 
     expect(prisma.action.deleteMany).toHaveBeenCalledTimes(1);
     expect(prisma.action.deleteMany).toHaveBeenCalledWith({
@@ -141,11 +149,11 @@ describe("disableUnusedAutoDrafts", () => {
     (prisma.executedAction.findMany as any).mockResolvedValueOnce(
       Array.from({ length: 10 }, (_, i) => ({
         id: `exec-${i}`,
-        wasDraftSent: false,
+        draftStatus: DraftEmailStatus.REPLIED_WITHOUT_DRAFT,
       })),
     );
 
-    const result = await disableUnusedAutoDrafts();
+    const result = await disableUnusedAutoDrafts(logger);
 
     expect(prisma.executedAction.findMany).toHaveBeenCalledWith(
       expect.objectContaining({

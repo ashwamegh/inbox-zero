@@ -1,6 +1,6 @@
 import useSWR from "swr";
-import { BarChart } from "@tremor/react";
 import type { DateRange } from "react-day-picker";
+import { BarChart } from "@/app/(app)/[emailAccountId]/stats/BarChart";
 import Link from "next/link";
 import { ExternalLinkIcon } from "lucide-react";
 import { usePostHog } from "posthog-js/react";
@@ -30,23 +30,31 @@ import type { Row } from "@/app/(app)/[emailAccountId]/bulk-unsubscribe/types";
 import { useThreads } from "@/hooks/useThreads";
 import { useAccount } from "@/providers/EmailAccountProvider";
 import { onAutoArchive } from "@/utils/actions/client";
+import { COLORS } from "@/utils/colors";
+import { getUserFacingUnsubscribeLink } from "@/utils/parse/unsubscribe";
 
 export function NewsletterModal(props: {
   newsletter?: Pick<Row, "name" | "unsubscribeLink" | "autoArchived">;
   onClose: (isOpen: boolean) => void;
   refreshInterval?: number;
+  mutate: () => Promise<unknown>;
 }) {
-  const { newsletter, refreshInterval, onClose } = props;
+  const { newsletter, refreshInterval, onClose, mutate } = props;
 
   const { emailAccountId, userEmail } = useAccount();
 
   const { userLabels } = useLabels();
 
   const posthog = usePostHog();
+  const unsubscribeLink = newsletter
+    ? getUserFacingUnsubscribeLink({
+        unsubscribeLink: newsletter.unsubscribeLink,
+      })
+    : undefined;
 
   return (
     <Dialog open={!!newsletter} onOpenChange={onClose}>
-      <DialogContent className="overflow-scroll lg:min-w-[880px] xl:min-w-[1280px]">
+      <DialogContent className="lg:min-w-[880px] xl:min-w-[1280px]">
         {newsletter && (
           <>
             <DialogHeader>
@@ -56,9 +64,9 @@ export function NewsletterModal(props: {
             <div className="flex space-x-2">
               <Button size="sm" variant="outline">
                 <a
-                  href={newsletter.unsubscribeLink || undefined}
-                  target="_blank"
-                  rel="noreferrer"
+                  href={unsubscribeLink || undefined}
+                  target={unsubscribeLink ? "_blank" : undefined}
+                  rel="noopener noreferrer"
                 >
                   Unsubscribe
                 </a>
@@ -74,7 +82,7 @@ export function NewsletterModal(props: {
                     });
                   }}
                 >
-                  Skip Inbox
+                  Auto Archive
                 </Button>
               </Tooltip>
               {newsletter.autoArchived && (
@@ -84,7 +92,7 @@ export function NewsletterModal(props: {
                     target="_blank"
                   >
                     <ExternalLinkIcon className="mr-2 h-4 w-4" />
-                    View Skip Inbox Filter
+                    View Auto Archive Filter
                   </Link>
                 </Button>
               )}
@@ -94,6 +102,7 @@ export function NewsletterModal(props: {
                 emailAccountId={emailAccountId}
                 labels={userLabels}
                 posthog={posthog}
+                mutate={mutate}
               />
             </div>
 
@@ -130,11 +139,24 @@ function useSenderEmails(props: {
   const { data, isLoading, error } = useSWR<
     SenderEmailsResponse,
     { error: string }
-  >(`/api/user/stats/sender-emails/?${new URLSearchParams(params as any)}`, {
+  >(`/api/user/stats/sender-emails/?${toSearchParams(params)}`, {
     refreshInterval: props.refreshInterval,
   });
 
   return { data, isLoading, error };
+}
+
+function toSearchParams(
+  params: Record<string, string | number | undefined | null>,
+) {
+  const searchParams = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue;
+    searchParams.set(key, String(value));
+  }
+
+  return searchParams.toString();
 }
 
 function EmailsChart(props: {
@@ -149,11 +171,11 @@ function EmailsChart(props: {
     <LoadingContent loading={isLoading} error={error}>
       {data && (
         <BarChart
-          className="h-72"
           data={data.result}
-          index="startOfPeriod"
-          categories={["Emails"]}
-          colors={["lime"]}
+          config={{
+            Emails: { label: "Emails", color: COLORS.analytics.green },
+          }}
+          xAxisKey="startOfPeriod"
         />
       )}
     </LoadingContent>

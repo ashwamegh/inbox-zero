@@ -17,6 +17,7 @@ import {
 } from "@/utils/schedule";
 import { Button } from "@/components/ui/button";
 import { toastError, toastSuccess } from "@/components/Toast";
+import { getActionErrorMessage } from "@/utils/error";
 import { updateDigestScheduleAction } from "@/utils/actions/settings";
 import { useAccount } from "@/providers/EmailAccountProvider";
 import { useAction } from "next-safe-action/hooks";
@@ -31,7 +32,7 @@ const digestScheduleFormSchema = z.object({
   dayOfWeek: z.string().min(1, "Please select a day"),
   hour: z.string().min(1, "Please select an hour"),
   minute: z.string().min(1, "Please select minutes"),
-  ampm: z.enum(["AM", "PM"], { required_error: "Please select AM or PM" }),
+  ampm: z.enum(["AM", "PM"], { error: "Please select AM or PM" }),
 });
 
 type DigestScheduleFormValues = z.infer<typeof digestScheduleFormSchema>;
@@ -39,8 +40,6 @@ type DigestScheduleFormValues = z.infer<typeof digestScheduleFormSchema>;
 const frequencies = [
   { value: "daily", label: "Day" },
   { value: "weekly", label: "Week" },
-  { value: "biweekly", label: "Two weeks" },
-  { value: "monthly", label: "Month" },
 ];
 
 const daysOfWeek = [
@@ -126,9 +125,7 @@ function DigestScheduleFormInner({
       },
       onError: (error) => {
         toastError({
-          description:
-            error.error.serverError ??
-            "An unknown error occurred while updating your settings",
+          description: getActionErrorMessage(error.error),
         });
       },
     },
@@ -182,7 +179,7 @@ function DigestScheduleFormInner({
     <form onSubmit={handleSubmit(onSubmit)}>
       <Label className="mb-2 mt-4">Send the digest email</Label>
 
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
         <FormItem>
           <Label htmlFor="frequency-select">Every</Label>
           <Select
@@ -244,7 +241,8 @@ function DigestScheduleFormInner({
           </FormItem>
         )}
 
-        <div className="space-y-2">
+        {/* Pin to the third column so hiding the day select doesn't shift this cell */}
+        <div className="space-y-2 sm:col-start-3">
           <Label>at</Label>
           <div className="flex items-end gap-2">
             <FormItem>

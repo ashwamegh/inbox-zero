@@ -1,17 +1,23 @@
 import prisma from "@/utils/prisma";
 import { generalizeSubject } from "@/utils/string";
 import type { ParsedMessage } from "@/utils/types";
-import { type GroupItem, GroupItemType } from "@prisma/client";
+import { GroupItemType } from "@/generated/prisma/enums";
+import type { GroupItem } from "@/generated/prisma/client";
 
-type GroupsWithRules = Awaited<ReturnType<typeof getGroupsWithRules>>;
+export type GroupsWithRules = Awaited<ReturnType<typeof getGroupsWithRules>>;
 
 export async function getGroupsWithRules({
   emailAccountId,
+  enabledOnly = true,
 }: {
   emailAccountId: string;
+  enabledOnly?: boolean;
 }) {
   return prisma.group.findMany({
-    where: { emailAccountId, rule: { isNot: null } },
+    where: {
+      emailAccountId,
+      rule: enabledOnly ? { enabled: true } : { isNot: null },
+    },
     include: { items: true, rule: { include: { actions: true } } },
   });
 }
@@ -24,15 +30,26 @@ export function findMatchingGroup(
   const excludeMatch = findExclusionMatch(message.headers, group.items);
   if (excludeMatch) {
     // If any exclusion pattern matches, this rule is completely excluded
-    return { group: null, matchingItem: null, excluded: true };
+    return {
+      group,
+      matchingItem: null,
+      excluded: true,
+      excludedItem: excludeMatch,
+    };
   }
 
   // If no exclusion patterns matched, check for inclusion patterns
   const matchingItem = findInclusionMatch(message.headers, group.items);
-  if (matchingItem) return { group, matchingItem, excluded: false };
+  if (matchingItem)
+    return { group, matchingItem, excluded: false, excludedItem: null };
 
   // No matches at all
-  return { group: null, matchingItem: null, excluded: false };
+  return {
+    group: null,
+    matchingItem: null,
+    excluded: false,
+    excludedItem: null,
+  };
 }
 
 function matchesPattern<T extends Pick<GroupItem, "type" | "value">>(
@@ -43,16 +60,21 @@ function matchesPattern<T extends Pick<GroupItem, "type" | "value">>(
 
   // from check
   if (item.type === GroupItemType.FROM && from) {
-    return item.value.includes(from) || from.includes(item.value);
+    const lowerValue = item.value.toLowerCase();
+    const lowerFrom = from.toLowerCase();
+    return lowerValue.includes(lowerFrom) || lowerFrom.includes(lowerValue);
   }
 
   // subject check
   if (item.type === GroupItemType.SUBJECT && subject) {
-    const subjectWithoutNumbers = generalizeSubject(subject);
-    const valueWithoutNumbers = generalizeSubject(item.value);
+    const lowerSubject = subject.toLowerCase();
+    const lowerItemValue = item.value.toLowerCase();
+
+    const subjectWithoutNumbers = generalizeSubject(lowerSubject);
+    const valueWithoutNumbers = generalizeSubject(lowerItemValue);
 
     return (
-      subject.includes(item.value) ||
+      lowerSubject.includes(lowerItemValue) ||
       subjectWithoutNumbers.includes(valueWithoutNumbers)
     );
   }
@@ -63,7 +85,7 @@ function matchesPattern<T extends Pick<GroupItem, "type" | "value">>(
 function findExclusionMatch<
   T extends Pick<GroupItem, "type" | "value" | "exclude">,
 >(headers: { from: string; subject: string }, groupItems: T[]) {
-  return groupItems.some(
+  return groupItems.find(
     (item) => item.exclude && matchesPattern(item, headers),
   );
 }

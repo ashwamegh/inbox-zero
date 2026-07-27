@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Confetti from "react-dom-confetti";
 import Image from "next/image";
+import { Confetti } from "@/components/Confetti";
 import { getCelebrationImage } from "@/utils/celebration";
 import { Button } from "@/components/Button";
 
@@ -15,7 +15,7 @@ export function Celebration(props: { message: string }) {
 
   return (
     <>
-      <div className="flex items-center justify-center font-cal text-2xl text-primary">
+      <div className="flex items-center justify-center font-title text-2xl text-primary">
         Congrats! {props.message}
       </div>
       <div className="flex items-center justify-center">

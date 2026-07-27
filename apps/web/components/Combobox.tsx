@@ -3,7 +3,6 @@
 import * as React from "react";
 import { CommandLoading } from "cmdk";
 import { Check, ChevronsUpDown, Loader2Icon } from "lucide-react";
-
 import { cn } from "@/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,7 +20,7 @@ import {
 } from "@/components/ui/popover";
 
 export function Combobox(props: {
-  options: { value: string; label: string }[];
+  options: { value: string; label: string; keywords?: string[] }[];
   placeholder: string;
   emptyText: React.ReactNode;
   value?: string;
@@ -56,7 +55,12 @@ export function Combobox(props: {
             value={props.onSearch ? props.search : undefined}
             onValueChange={props.onSearch}
           />
-          <CommandList>
+          <CommandList
+            onWheelCapture={(e: React.WheelEvent<HTMLDivElement>) => {
+              e.preventDefault();
+              e.currentTarget.scrollTop += e.deltaY;
+            }}
+          >
             {loading && (
               <CommandLoading>
                 <div className="flex items-center justify-center">
@@ -71,7 +75,12 @@ export function Combobox(props: {
                   <CommandItem
                     key={options.value}
                     value={options.value}
-                    onSelect={(currentValue) => {
+                    keywords={
+                      options.keywords
+                        ? [...options.keywords, options.label]
+                        : [options.label]
+                    }
+                    onSelect={(currentValue: string) => {
                       onChangeValue(currentValue === value ? "" : currentValue);
                       setOpen(false);
                     }}

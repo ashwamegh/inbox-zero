@@ -6,112 +6,218 @@ import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { Button } from "@/components/Button";
 import { Button as UIButton } from "@/components/ui/button";
-import { SectionDescription } from "@/components/Typography";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { signIn } from "@/utils/auth-client";
+import { signIn, signInWithOauth2 } from "@/utils/auth-client";
 import { WELCOME_PATH } from "@/utils/config";
+import { toastError } from "@/components/Toast";
+import { normalizeInternalPath } from "@/utils/path";
+import { buildRedirectUrl, redirectToSafeUrl } from "@/utils/redirect";
+import { createClientLogger } from "@/utils/logger-client";
+import type { LoginProvider } from "@/utils/oauth/login-providers";
 
-export function LoginForm() {
+const logger = createClientLogger("login/LoginForm");
+const CONNECT_MAILBOX_PATH = "/connect-mailbox";
+
+export function LoginForm({
+  enabledProviders,
+  useGoogleOauthEmulator,
+}: {
+  enabledProviders: readonly LoginProvider[];
+  useGoogleOauthEmulator: boolean;
+}) {
   const searchParams = useSearchParams();
   const next = searchParams?.get("next");
-  const error = searchParams?.get("error");
+  const { callbackURL, errorCallbackURL } = getAuthCallbackUrls(next);
+  const appleCallbackURL = buildConnectMailboxUrl(callbackURL);
+  const showAppleLogin = enabledProviders.includes("apple");
+  const showGoogleLogin = enabledProviders.includes("google");
+  const showMicrosoftLogin = enabledProviders.includes("microsoft");
+  const showSsoLogin = enabledProviders.includes("sso");
 
+  const [loadingApple, setLoadingApple] = useState(false);
   const [loadingGoogle, setLoadingGoogle] = useState(false);
   const [loadingMicrosoft, setLoadingMicrosoft] = useState(false);
 
   const handleGoogleSignIn = async () => {
     setLoadingGoogle(true);
-    await signIn.social({
-      provider: "google",
-      errorCallbackURL: "/login/error",
-      callbackURL: next && next.length > 0 ? next : WELCOME_PATH,
-      ...(error === "RequiresReconsent" ? { consent: true } : {}),
-    });
-    setLoadingGoogle(false);
+    try {
+      if (useGoogleOauthEmulator) {
+        const result = await signInWithOauth2({
+          providerId: "google",
+          errorCallbackURL,
+          callbackURL,
+        });
+        if (!result.url) {
+          throw new Error("Missing Google sign-in redirect URL");
+        }
+        redirectToSafeUrl(result.url, { allowExternal: true });
+      } else {
+        await signIn.social({
+          provider: "google",
+          errorCallbackURL,
+          callbackURL,
+        });
+      }
+    } catch (error) {
+      const description = getSocialSignInErrorMessage(error);
+      logger.error("Error signing in with Google", { error });
+      toastError({
+        title: "Error signing in with Google",
+        description,
+      });
+    } finally {
+      setLoadingGoogle(false);
+    }
   };
 
   const handleMicrosoftSignIn = async () => {
-    setLoadingMicrosoft(true);
-    await signIn.social({
+    await handleSocialSignIn({
       provider: "microsoft",
-      errorCallbackURL: "/login/error",
-      callbackURL: next && next.length > 0 ? next : WELCOME_PATH,
-      ...(error === "RequiresReconsent" ? { consent: true } : {}),
+      providerName: "Microsoft",
+      callbackURL,
+      errorCallbackURL,
+      setLoading: setLoadingMicrosoft,
     });
-    setLoadingMicrosoft(false);
   };
 
   return (
     <div className="flex flex-col justify-center gap-2 px-4 sm:px-16">
-      <Dialog>
-        <DialogTrigger asChild>
-          <Button size="2xl">
-            <span className="flex items-center justify-center">
-              <Image
-                src="/images/google.svg"
-                alt=""
-                width={24}
-                height={24}
-                unoptimized
-              />
-              <span className="ml-2">Sign in with Google</span>
-            </span>
-          </Button>
-        </DialogTrigger>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Sign in</DialogTitle>
-          </DialogHeader>
-          <SectionDescription>
-            Inbox Zero{"'"}s use and transfer of information received from
-            Google APIs to any other app will adhere to{" "}
-            <a
-              href="https://developers.google.com/terms/api-services-user-data-policy"
-              className="underline underline-offset-4 hover:text-gray-900"
-            >
-              Google API Services User Data
-            </a>{" "}
-            Policy, including the Limited Use requirements.
-          </SectionDescription>
-          <div>
-            <Button loading={loadingGoogle} onClick={handleGoogleSignIn}>
-              I agree
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {showGoogleLogin ? (
+        <Button size="2xl" loading={loadingGoogle} onClick={handleGoogleSignIn}>
+          <span className="flex items-center justify-center">
+            <Image
+              src="/images/google.svg"
+              alt="Google"
+              width={24}
+              height={24}
+              unoptimized
+            />
+            <span className="ml-2">Sign in with Google</span>
+          </span>
+        </Button>
+      ) : null}
 
-      <Button
-        size="2xl"
-        loading={loadingMicrosoft}
-        onClick={handleMicrosoftSignIn}
-      >
-        <span className="flex items-center justify-center">
-          <Image
-            src="/images/microsoft.svg"
-            alt=""
-            width={24}
-            height={24}
-            unoptimized
-          />
-          <span className="ml-2">Sign in with Microsoft</span>
-        </span>
-      </Button>
+      {showMicrosoftLogin ? (
+        <Button
+          size="2xl"
+          loading={loadingMicrosoft}
+          onClick={handleMicrosoftSignIn}
+        >
+          <span className="flex items-center justify-center">
+            <Image
+              src="/images/microsoft.svg"
+              alt="Microsoft"
+              width={24}
+              height={24}
+              unoptimized
+            />
+            <span className="ml-2">Sign in with Microsoft</span>
+          </span>
+        </Button>
+      ) : null}
 
-      <UIButton
-        variant="ghost"
-        size="lg"
-        className="w-full hover:scale-105 transition-transform"
-        asChild
-      >
-        <Link href="/login/sso">Sign in with SSO</Link>
-      </UIButton>
+      {showAppleLogin ? (
+        <UIButton
+          variant="ghost"
+          size="lg"
+          className="w-full hover:scale-105 transition-transform"
+          loading={loadingApple}
+          onClick={() =>
+            handleSocialSignIn({
+              provider: "apple",
+              providerName: "Apple",
+              callbackURL: appleCallbackURL,
+              errorCallbackURL,
+              setLoading: setLoadingApple,
+            })
+          }
+        >
+          Sign in with Apple
+        </UIButton>
+      ) : null}
+
+      {showSsoLogin ? (
+        <UIButton
+          variant="ghost"
+          size="lg"
+          className="w-full hover:scale-105 transition-transform"
+          asChild
+        >
+          <Link href="/login/sso">Sign in with SSO</Link>
+        </UIButton>
+      ) : null}
     </div>
+  );
+}
+
+function getAuthCallbackUrls(next: string | null) {
+  const callbackURL = normalizeInternalPath(next) ?? WELCOME_PATH;
+  const errorCallbackURL = isOrganizationInvitationPath(callbackURL)
+    ? "/login/error?reason=org_invite"
+    : "/login/error";
+
+  return { callbackURL, errorCallbackURL };
+}
+
+function buildConnectMailboxUrl(nextPath: string) {
+  if (nextPath === CONNECT_MAILBOX_PATH) return CONNECT_MAILBOX_PATH;
+  return buildRedirectUrl(CONNECT_MAILBOX_PATH, { next: nextPath });
+}
+
+function isOrganizationInvitationPath(path: string) {
+  const pathname = path.split("?")[0];
+  return /^\/organizations\/invitations\/[^/]+\/accept\/?$/.test(pathname);
+}
+
+async function handleSocialSignIn({
+  provider,
+  providerName,
+  callbackURL,
+  errorCallbackURL,
+  setLoading,
+}: {
+  provider: "apple" | "google" | "microsoft";
+  providerName: "Apple" | "Google" | "Microsoft";
+  callbackURL: string;
+  errorCallbackURL: string;
+  setLoading: (loading: boolean) => void;
+}) {
+  setLoading(true);
+  try {
+    await signIn.social({
+      provider,
+      errorCallbackURL,
+      callbackURL,
+    });
+  } catch (error) {
+    const description = getSocialSignInErrorMessage(error);
+    logger.error(`Error signing in with ${providerName}`, { error });
+    toastError({
+      title: `Error signing in with ${providerName}`,
+      description,
+    });
+  } finally {
+    setLoading(false);
+  }
+}
+
+function getSocialSignInErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message) {
+    if (isNetworkSignInError(error.message)) {
+      return "Could not start sign-in. Please check that this app is opened from its configured public URL, then try again.";
+    }
+
+    return error.message;
+  }
+
+  return "Please try again or contact support.";
+}
+
+function isNetworkSignInError(message: string) {
+  const normalizedMessage = message.toLowerCase();
+
+  return (
+    normalizedMessage === "load failed" ||
+    normalizedMessage === "failed to fetch" ||
+    normalizedMessage === "networkerror when attempting to fetch resource."
   );
 }

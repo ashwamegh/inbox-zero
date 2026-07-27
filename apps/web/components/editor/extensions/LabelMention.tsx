@@ -2,7 +2,7 @@ import { ReactRenderer } from "@tiptap/react";
 import { Mention } from "@tiptap/extension-mention";
 import { PluginKey } from "@tiptap/pm/state";
 import { MentionList, type MentionListRef } from "./MentionList";
-import type { EmailLabel } from "@/providers/EmailProvider";
+import type { EmailLabel } from "@/providers/email-label-types";
 
 const MAX_SUGGESTIONS = 10;
 
@@ -14,6 +14,7 @@ interface MarkdownNode {
   attrs: {
     id?: string;
     label?: string;
+    // biome-ignore lint/suspicious/noExplicitAny: existing loose external shape
     [key: string]: any;
   };
 }
@@ -21,13 +22,14 @@ interface MarkdownNode {
 interface MarkdownItState {
   pos: number;
   posMax: number;
-  src: string;
   push: (type: string, tag: string, nesting: number) => MarkdownItToken;
+  src: string;
 }
 
 interface MarkdownItToken {
   attrs: Array<[string, string]>;
   content?: string;
+  // biome-ignore lint/suspicious/noExplicitAny: existing loose external shape
   [key: string]: any;
 }
 
@@ -286,9 +288,7 @@ export const createLabelMentionExtension = (labels: EmailLabel[]) => {
                 return `<span class="mention-label" data-type="mention" data-id="${id}" data-label="${label}" data-mention-suggestion-char="@" contenteditable="false">`;
               };
 
-              markdownIt.renderer.rules.mention_close = () => {
-                return "</span>";
-              };
+              markdownIt.renderer.rules.mention_close = () => "</span>";
             },
           },
         },

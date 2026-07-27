@@ -1,11 +1,10 @@
 import { z } from "zod";
-import { createScopedLogger } from "@/utils/logger";
-import type { Knowledge } from "@prisma/client";
+import type { Logger } from "@/utils/logger";
+import type { Knowledge } from "@/generated/prisma/client";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
-import { getModel } from "@/utils/llms/model";
+import { getModelForUseCase, LlmUseCase } from "@/utils/llms/use-cases";
 import { createGenerateObject } from "@/utils/llms";
-
-const logger = createScopedLogger("ai/knowledge/extract");
+import { getUserInfoPrompt } from "@/utils/ai/helpers";
 
 const system = `You are a knowledge extraction agent. Your task is to analyze the provided knowledge base entries and extract the most relevant information for drafting an email response, based ONLY on the provided knowledge base entries.
 
@@ -58,16 +57,7 @@ ${emailContent}
 ${knowledgeBaseText}
 </knowledge_base>
 
-${
-  emailAccount.about
-    ? `<user_info>
-<about>${emailAccount.about}</about>
-<email>${emailAccount.email}</email>
-</user_info>`
-    : `<user_info>
-<email>${emailAccount.email}</email>
-</user_info>`
-}
+${getUserInfoPrompt({ emailAccount })}
 
 Extract the most relevant information FROM THE KNOWLEDGE BASE for drafting a response to this email.`;
 };
@@ -86,22 +76,28 @@ export async function aiExtractRelevantKnowledge({
   knowledgeBase,
   emailContent,
   emailAccount,
+  logger,
 }: {
   knowledgeBase: Knowledge[];
   emailContent: string;
   emailAccount: EmailAccountWithAI;
+  logger: Logger;
 }): Promise<ExtractedKnowledge | null> {
   try {
     if (!knowledgeBase.length) return null;
 
     const prompt = getUserPrompt({ knowledgeBase, emailContent, emailAccount });
 
-    const modelOptions = getModel(emailAccount.user, "economy");
+    const modelOptions = getModelForUseCase(
+      emailAccount.user,
+      LlmUseCase.KnowledgeExtraction,
+    );
 
     const generateObject = createGenerateObject({
-      userEmail: emailAccount.email,
+      emailAccount,
       label: "Knowledge extraction",
       modelOptions,
+      promptHardening: { trust: "untrusted", level: "compact" },
     });
 
     const result = await generateObject({

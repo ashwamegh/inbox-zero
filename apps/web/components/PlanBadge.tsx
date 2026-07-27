@@ -4,16 +4,25 @@ import { Badge, type Color } from "@/components/Badge";
 import { HoverCard } from "@/components/HoverCard";
 import {
   ActionType,
-  type ExecutedRule,
-  type ExecutedAction,
-  type Rule,
-} from "@prisma/client";
-import { truncate } from "@/utils/string";
+  ExecutedRuleStatus,
+  type MessagingProvider,
+} from "@/generated/prisma/enums";
+import type {
+  ExecutedRule,
+  ExecutedAction,
+  Rule,
+} from "@/generated/prisma/client";
 import { getEmailTerminology } from "@/utils/terminology";
+import { sortActionsByPriority } from "@/utils/action-sort";
+import { getMessagingProviderName } from "@/utils/messaging/platforms";
+
+type PlanAction = ExecutedAction & {
+  messagingChannel?: { provider: MessagingProvider } | null;
+};
 
 type Plan = Pick<ExecutedRule, "reason" | "status"> & {
   rule: Rule | null;
-  actionItems: ExecutedAction[];
+  actionItems: PlanAction[];
 };
 
 export function PlanBadge(props: { plan?: Plan; provider: string }) {
@@ -53,24 +62,24 @@ export function PlanBadge(props: { plan?: Plan; provider: string }) {
             </div>
           ) : null}
           <div className="mt-4 space-y-2">
-            {plan.actionItems?.map((action, i) => {
-              return (
-                <div key={i}>
-                  <Badge
-                    color={getActionColor(action.type)}
-                    className="whitespace-pre-wrap"
-                  >
-                    {getActionMessage(action, provider)}
-                  </Badge>
-                </div>
-              );
-            })}
+            {sortActionsByPriority(plan.actionItems || []).map((action, i) => (
+              <div key={i}>
+                <Badge
+                  color={getActionColor(action.type)}
+                  className="whitespace-pre-wrap"
+                >
+                  {getActionMessage(action, provider)}
+                </Badge>
+              </div>
+            ))}
           </div>
         </div>
       }
     >
-      <Badge color={getPlanColor(plan, plan.status === "APPLIED")}>
-        {plan.status === "APPLIED" && (
+      <Badge
+        color={getPlanColor(plan, plan.status === ExecutedRuleStatus.APPLIED)}
+      >
+        {plan.status === ExecutedRuleStatus.APPLIED && (
           <CheckCircleIcon className="mr-2 h-3 w-3" />
         )}
         {plan.rule.name}
@@ -79,82 +88,11 @@ export function PlanBadge(props: { plan?: Plan; provider: string }) {
   );
 }
 
-export function ActionBadge({
-  type,
-  provider,
-}: {
-  type: ActionType;
-  provider: string;
-}) {
-  return (
-    <Badge color={getActionColor(type)}>{getActionLabel(type, provider)}</Badge>
-  );
-}
-
-export function ActionBadgeExpanded({
-  action,
-  provider,
-}: {
-  action: ExecutedAction;
-  provider: string;
-}) {
-  switch (action.type) {
-    case ActionType.ARCHIVE:
-      return <ActionBadge type={ActionType.ARCHIVE} provider={provider} />;
-    case ActionType.LABEL:
-      return (
-        <Badge color="blue">
-          {getEmailTerminology(provider).label.action}: "{action.label}"
-        </Badge>
-      );
-    case ActionType.REPLY:
-      return (
-        <div>
-          <Badge color="indigo">Reply</Badge>
-          <ActionContent action={action} />
-        </div>
-      );
-    case ActionType.SEND_EMAIL:
-      return (
-        <div>
-          <Badge color="indigo">Send email</Badge>
-          <ActionContent action={action} />
-        </div>
-      );
-    case ActionType.FORWARD:
-      return (
-        <div>
-          <Badge color="indigo">Forward email</Badge>
-          <ActionContent action={action} />
-        </div>
-      );
-    case ActionType.DRAFT_EMAIL:
-      return (
-        <div>
-          <Badge color="pink">Draft reply</Badge>
-          <ActionContent action={action} />
-        </div>
-      );
-    case ActionType.MARK_SPAM:
-      return <ActionBadge type={ActionType.MARK_SPAM} provider={provider} />;
-    case ActionType.CALL_WEBHOOK:
-      return <ActionBadge type={ActionType.CALL_WEBHOOK} provider={provider} />;
-    case ActionType.MARK_READ:
-      return <ActionBadge type={ActionType.MARK_READ} provider={provider} />;
-    default:
-      return <ActionBadge type={action.type} provider={provider} />;
-  }
-}
-
-function ActionContent({ action }: { action: ExecutedAction }) {
-  return (
-    !!action.content && (
-      <div className="mt-1">{truncate(action.content, 280)}</div>
-    )
-  );
-}
-
-function getActionLabel(type: ActionType, provider: string) {
+function getActionLabel(
+  type: ActionType,
+  provider: string,
+  action?: PlanAction,
+) {
   const terminology = getEmailTerminology(provider);
 
   switch (type) {
@@ -169,6 +107,7 @@ function getActionLabel(type: ActionType, provider: string) {
     case ActionType.SEND_EMAIL:
       return "Send";
     case ActionType.DRAFT_EMAIL:
+    case ActionType.DRAFT_MESSAGING_CHANNEL:
       return "Draft";
     case ActionType.CALL_WEBHOOK:
       return "Webhook";
@@ -176,12 +115,20 @@ function getActionLabel(type: ActionType, provider: string) {
       return "Mark as spam";
     case ActionType.MARK_READ:
       return "Mark as read";
+    case ActionType.STAR:
+      return "Star";
+    case ActionType.NOTIFY_MESSAGING_CHANNEL:
+      return action?.messagingChannel?.provider
+        ? `Notify via ${getMessagingProviderName(action.messagingChannel.provider)}`
+        : "Notify";
+    case ActionType.NOTIFY_SENDER:
+      return "Notify Sender";
     default:
       return capitalCase(type);
   }
 }
 
-function getActionMessage(action: ExecutedAction, provider: string): string {
+function getActionMessage(action: PlanAction, provider: string): string {
   const terminology = getEmailTerminology(provider);
 
   switch (action.type) {
@@ -194,11 +141,11 @@ function getActionMessage(action: ExecutedAction, provider: string): string {
     // biome-ignore lint/suspicious/noFallthroughSwitchClause: ignore
     case ActionType.FORWARD:
       if (action.to)
-        return `${getActionLabel(action.type, provider)} to ${action.to}${
+        return `${getActionLabel(action.type, provider, action)} to ${action.to}${
           action.content ? `:\n${action.content}` : ""
         }`;
     default:
-      return getActionLabel(action.type, provider);
+      return getActionLabel(action.type, provider, action);
   }
 }
 
@@ -208,14 +155,29 @@ export function getActionColor(actionType: ActionType): Color {
     case ActionType.FORWARD:
     case ActionType.SEND_EMAIL:
     case ActionType.DRAFT_EMAIL:
+    case ActionType.DRAFT_MESSAGING_CHANNEL:
       return "green";
     case ActionType.ARCHIVE:
     case ActionType.MARK_READ:
+    case ActionType.STAR:
+    case ActionType.DELETE:
       return "yellow";
     case ActionType.LABEL:
       return "blue";
-    default:
+    case ActionType.MOVE_FOLDER:
+      return "pink";
+    case ActionType.MARK_SPAM:
+      return "red";
+    case ActionType.CALL_WEBHOOK:
+    case ActionType.DIGEST:
       return "purple";
+    case ActionType.NOTIFY_MESSAGING_CHANNEL:
+    case ActionType.NOTIFY_SENDER:
+      return "purple";
+    default: {
+      const exhaustiveCheck: never = actionType;
+      return exhaustiveCheck;
+    }
   }
 }
 
@@ -229,8 +191,10 @@ function getPlanColor(plan: Plan | null, executed: boolean): Color {
     case ActionType.FORWARD:
     case ActionType.SEND_EMAIL:
     case ActionType.DRAFT_EMAIL:
+    case ActionType.DRAFT_MESSAGING_CHANNEL:
       return "blue";
     case ActionType.ARCHIVE:
+    case ActionType.STAR:
       return "yellow";
     case ActionType.LABEL:
       return "purple";

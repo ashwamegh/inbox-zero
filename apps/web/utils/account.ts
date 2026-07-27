@@ -1,153 +1,153 @@
+import { cookies } from "next/headers";
 import { auth } from "@/utils/auth";
-import {
-  getGmailClientWithRefresh,
-  getAccessTokenFromClient,
-} from "@/utils/gmail/client";
-import {
-  getOutlookClientWithRefresh,
-  getAccessTokenFromClient as getOutlookAccessToken,
-} from "@/utils/outlook/client";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
 import prisma from "@/utils/prisma";
-import { notFound } from "next/navigation";
+import {
+  LAST_EMAIL_ACCOUNT_COOKIE,
+  parseLastEmailAccountCookieValue,
+} from "@/utils/cookies";
+import { buildLoginRedirectUrl, buildRedirectUrl } from "@/utils/redirect";
+import { createScopedLogger } from "@/utils/logger";
+import { flushLoggerSafely } from "@/utils/logger-flush";
 
-export async function getGmailClientForEmail({
-  emailAccountId,
-}: {
-  emailAccountId: string;
-}) {
-  const tokens = await getTokens({ emailAccountId });
-  const gmail = getGmailClientWithRefresh({
-    accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken || "",
-    expiresAt: tokens.expiresAt,
-    emailAccountId,
+const logger = createScopedLogger("account-redirect");
+
+export async function redirectToEmailAccountPath(
+  path: `/${string}`,
+  searchParams?: Record<string, string | string[] | undefined>,
+) {
+  const timing = createRedirectTiming(path, searchParams);
+  const session = await measureRedirectStep(timing, "auth", () => auth());
+  const userId = session?.user.id;
+  if (!userId) {
+    logRedirectTiming(timing, {
+      outcome: "login",
+      usedLastEmailAccountCookie: false,
+      usedFallbackAccountLookup: false,
+      foundEmailAccount: false,
+    });
+    redirect(buildLoginRedirectUrl(buildRedirectUrl(path, searchParams)));
+  }
+
+  const lastEmailAccountId = await measureRedirectStep(
+    timing,
+    "last-email-account-cookie",
+    () => getLastEmailAccountFromCookie(userId),
+  );
+
+  let emailAccountId = lastEmailAccountId;
+
+  // If no last account is available, fall back to the first account.
+  if (!emailAccountId) {
+    const emailAccount = await measureRedirectStep(
+      timing,
+      "fallback-email-account-lookup",
+      () =>
+        prisma.emailAccount.findFirst({
+          where: { userId },
+          select: { id: true },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        }),
+    );
+    emailAccountId = emailAccount?.id ?? null;
+  }
+
+  if (!emailAccountId) {
+    logRedirectTiming(timing, {
+      outcome: "connect-mailbox",
+      usedLastEmailAccountCookie: !!lastEmailAccountId,
+      usedFallbackAccountLookup: !lastEmailAccountId,
+      foundEmailAccount: false,
+    });
+    redirect(
+      buildRedirectUrl("/connect-mailbox", {
+        next: buildRedirectUrl(path, searchParams),
+      }),
+    );
+  }
+
+  const redirectUrl = buildRedirectUrl(
+    `/${emailAccountId}${path}`,
+    searchParams,
+  );
+
+  logRedirectTiming(timing, {
+    outcome: "account-path",
+    usedLastEmailAccountCookie: !!lastEmailAccountId,
+    usedFallbackAccountLookup: !lastEmailAccountId,
+    foundEmailAccount: true,
   });
-  return gmail;
+  redirect(redirectUrl);
 }
 
-export async function getGmailAndAccessTokenForEmail({
-  emailAccountId,
-}: {
-  emailAccountId: string;
-}) {
-  const tokens = await getTokens({ emailAccountId });
-  const gmail = await getGmailClientWithRefresh({
-    accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken || "",
-    expiresAt: tokens.expiresAt,
-    emailAccountId,
-  });
-  const accessToken = getAccessTokenFromClient(gmail);
-  return { gmail, accessToken, tokens };
+async function getLastEmailAccountFromCookie(
+  userId: string,
+): Promise<string | null> {
+  try {
+    const cookieStore = await cookies();
+    const cookieValue = cookieStore.get(LAST_EMAIL_ACCOUNT_COOKIE)?.value;
+    return parseLastEmailAccountCookieValue({ userId, cookieValue });
+  } catch {
+    return null;
+  }
 }
 
-export async function getGmailClientForEmailId({
-  emailAccountId,
-}: {
-  emailAccountId: string;
-}) {
-  const account = await prisma.emailAccount.findUnique({
-    where: { id: emailAccountId },
-    select: {
-      account: {
-        select: { access_token: true, refresh_token: true, expires_at: true },
-      },
-    },
-  });
-  const gmail = getGmailClientWithRefresh({
-    accessToken: account?.account.access_token,
-    refreshToken: account?.account.refresh_token || "",
-    expiresAt: account?.account.expires_at?.getTime() ?? null,
-    emailAccountId,
-  });
-  return gmail;
-}
+type RedirectTiming = {
+  path: string;
+  searchParamKeys: string[];
+  startedAt: number;
+  stepDurationsMs: Record<string, number>;
+};
 
-export async function getOutlookClientForEmail({
-  emailAccountId,
-}: {
-  emailAccountId: string;
-}) {
-  const tokens = await getTokens({ emailAccountId });
-  const outlook = await getOutlookClientWithRefresh({
-    accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken || "",
-    expiresAt: tokens.expiresAt,
-    emailAccountId,
-  });
-  return outlook;
-}
-
-export async function getOutlookAndAccessTokenForEmail({
-  emailAccountId,
-}: {
-  emailAccountId: string;
-}) {
-  const tokens = await getTokens({ emailAccountId });
-  const outlook = await getOutlookClientWithRefresh({
-    accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken || "",
-    expiresAt: tokens.expiresAt,
-    emailAccountId,
-  });
-  const accessToken = getOutlookAccessToken(outlook);
-  return { outlook, accessToken, tokens };
-}
-
-export async function getOutlookClientForEmailId({
-  emailAccountId,
-}: {
-  emailAccountId: string;
-}) {
-  const account = await prisma.emailAccount.findUnique({
-    where: { id: emailAccountId },
-    select: {
-      account: {
-        select: { access_token: true, refresh_token: true, expires_at: true },
-      },
-    },
-  });
-  const outlook = await getOutlookClientWithRefresh({
-    accessToken: account?.account.access_token,
-    refreshToken: account?.account.refresh_token || "",
-    expiresAt: account?.account.expires_at?.getTime() ?? null,
-    emailAccountId,
-  });
-  return outlook;
-}
-
-async function getTokens({ emailAccountId }: { emailAccountId: string }) {
-  const emailAccount = await prisma.emailAccount.findUnique({
-    where: { id: emailAccountId },
-    select: {
-      account: {
-        select: { access_token: true, refresh_token: true, expires_at: true },
-      },
-    },
-  });
-
+function createRedirectTiming(
+  path: `/${string}`,
+  searchParams?: Record<string, string | string[] | undefined>,
+): RedirectTiming {
   return {
-    accessToken: emailAccount?.account.access_token,
-    refreshToken: emailAccount?.account.refresh_token,
-    expiresAt: emailAccount?.account.expires_at?.getTime() ?? null,
+    path,
+    searchParamKeys: Object.keys(searchParams ?? {}).sort(),
+    startedAt: Date.now(),
+    stepDurationsMs: {},
   };
 }
 
-export async function redirectToEmailAccountPath(path: `/${string}`) {
-  const session = await auth();
-  const userId = session?.user.id;
-  if (!userId) throw new Error("Not authenticated");
+async function measureRedirectStep<T>(
+  timing: RedirectTiming,
+  step: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    return await operation();
+  } finally {
+    timing.stepDurationsMs[step] = Date.now() - startedAt;
+  }
+}
 
-  const emailAccount = await prisma.emailAccount.findFirst({
-    where: { userId },
+function logRedirectTiming(
+  timing: RedirectTiming,
+  metadata: {
+    outcome: "account-path" | "connect-mailbox" | "login";
+    usedLastEmailAccountCookie: boolean;
+    usedFallbackAccountLookup: boolean;
+    foundEmailAccount: boolean;
+  },
+) {
+  const durationMs = Date.now() - timing.startedAt;
+  logger.info("Resolved account redirect", {
+    path: timing.path,
+    searchParamKeys: timing.searchParamKeys,
+    durationMs,
+    stepDurationsMs: timing.stepDurationsMs,
+    ...metadata,
   });
 
-  if (!emailAccount) {
-    notFound();
-  }
-
-  const redirectUrl = `/${emailAccount.id}${path}`;
-
-  redirect(redirectUrl);
+  after(async () => {
+    await flushLoggerSafely(logger, {
+      path: timing.path,
+      durationMs,
+      outcome: metadata.outcome,
+    });
+  });
 }

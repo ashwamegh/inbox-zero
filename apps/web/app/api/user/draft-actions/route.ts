@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import prisma from "@/utils/prisma";
 import { withEmailAccount } from "@/utils/middleware";
-import { ActionType } from "@prisma/client";
+import { ActionType } from "@/generated/prisma/enums";
 
 export type DraftActionsResponse = Awaited<ReturnType<typeof getData>>;
 
-export const GET = withEmailAccount(async (request) => {
+export const GET = withEmailAccount("user/draft-actions", async (request) => {
   const emailAccountId = request.auth.emailAccountId;
 
   const response = await getData({ emailAccountId });
@@ -24,7 +24,7 @@ async function getData({ emailAccountId }: { emailAccountId: string }) {
       createdAt: true,
       content: true,
       draftId: true,
-      wasDraftSent: true,
+      draftStatus: true,
       draftSendLog: {
         select: {
           sentMessageId: true,

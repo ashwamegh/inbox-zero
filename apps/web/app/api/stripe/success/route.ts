@@ -4,27 +4,44 @@ import { syncStripeDataToDb } from "@/ee/billing/stripe/sync-stripe";
 import { withAuth } from "@/utils/middleware";
 import prisma from "@/utils/prisma";
 import { trackStripeCheckoutCompleted } from "@/utils/posthog";
+import {
+  CONVERSION_EVENT_ID_PARAM,
+  CONVERSION_EVENT_PARAM,
+} from "@/utils/analytics/conversion-events";
+import { buildRedirectUrl } from "@/utils/redirect";
 
-export const GET = withAuth(async (request) => {
+export const GET = withAuth("stripe/success", async (request) => {
   const userId = request.auth.userId;
-
-  after(async () => {
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { email: true },
-    });
-    if (!user) return;
-    trackStripeCheckoutCompleted(user.email);
-  });
+  const logger = request.logger;
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { premium: { select: { stripeCustomerId: true } } },
+    select: {
+      email: true,
+      premium: { select: { stripeCustomerId: true } },
+    },
   });
 
   if (!user?.premium?.stripeCustomerId) redirect("/premium");
 
-  await syncStripeDataToDb({ customerId: user.premium.stripeCustomerId });
+  after(async () => {
+    if (!user?.email) return;
+    trackStripeCheckoutCompleted(user.email, { source: "success_redirect" });
+  });
 
-  redirect("/setup");
+  await syncStripeDataToDb({
+    customerId: user.premium.stripeCustomerId,
+    logger,
+  });
+
+  const stripeCheckoutSessionId = new URL(request.url).searchParams.get(
+    "session_id",
+  );
+
+  redirect(
+    buildRedirectUrl("/setup", {
+      [CONVERSION_EVENT_PARAM]: "trial_started",
+      [CONVERSION_EVENT_ID_PARAM]: stripeCheckoutSessionId ?? undefined,
+    }),
+  );
 });

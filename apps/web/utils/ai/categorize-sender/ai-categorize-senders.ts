@@ -1,19 +1,20 @@
 import { z } from "zod";
 import { isDefined } from "@/utils/types";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
-import type { Category } from "@prisma/client";
+import type { Category } from "@/generated/prisma/client";
 import { formatCategoriesForPrompt } from "@/utils/ai/categorize-sender/format-categories";
 import { extractEmailAddress } from "@/utils/email";
-import { getModel } from "@/utils/llms/model";
+import { getModelForUseCase, LlmUseCase } from "@/utils/llms/use-cases";
 import { createGenerateObject } from "@/utils/llms";
+import { strictOptional } from "@/utils/llms/strict-optional";
 
 export const REQUEST_MORE_INFORMATION_CATEGORY = "RequestMoreInformation";
-export const UNKNOWN_CATEGORY = "Unknown";
+export const UNKNOWN_CATEGORY = "Other";
 
 const categorizeSendersSchema = z.object({
   senders: z.array(
     z.object({
-      rationale: z.string().describe("Keep it short."),
+      rationale: strictOptional(z.string()).describe("Keep it short."),
       sender: z.string(),
       category: z.string(), // not using enum, because sometimes the ai creates new categories, which throws an error. we prefer to handle this ourselves
     }),
@@ -75,23 +76,27 @@ ${formatCategoriesForPrompt(categories)}
 <instructions>
 1. Analyze each sender's email address and their recent emails for categorization.
 2. If the sender's category is clear, assign it.
-3. Use "Unknown" if the category is unclear or multiple categories could apply.
+3. Use "${UNKNOWN_CATEGORY}" if the category is unclear or multiple categories could apply.
 4. Use "${REQUEST_MORE_INFORMATION_CATEGORY}" if more context is needed.
 </instructions>
 
 <important>
 - Accuracy is more important than completeness
 - Only use the categories provided above
-- Respond with "Unknown" if unsure
+- Respond with "${UNKNOWN_CATEGORY}" if unsure
 - Return your response in JSON format
 </important>`;
 
-  const modelOptions = getModel(emailAccount.user, "chat");
+  const modelOptions = getModelForUseCase(
+    emailAccount.user,
+    LlmUseCase.CategorizeSendersBulk,
+  );
 
   const generateObject = createGenerateObject({
-    userEmail: emailAccount.email,
+    emailAccount,
     label: "Categorize senders bulk",
     modelOptions,
+    promptHardening: { trust: "untrusted", level: "compact" },
   });
 
   const aiResponse = await generateObject({

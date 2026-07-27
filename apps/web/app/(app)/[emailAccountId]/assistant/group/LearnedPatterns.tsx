@@ -2,8 +2,7 @@
 
 import { useState } from "react";
 import { useAction } from "next-safe-action/hooks";
-import { BrainIcon } from "lucide-react";
-import { ViewGroup } from "@/app/(app)/[emailAccountId]/assistant/group/ViewGroup";
+import { ViewLearnedPatterns } from "@/app/(app)/[emailAccountId]/assistant/group/ViewLearnedPatterns";
 import {
   Dialog,
   DialogContent,
@@ -16,14 +15,19 @@ import { Button } from "@/components/ui/button";
 import { createGroupAction } from "@/utils/actions/group";
 import { useAccount } from "@/providers/EmailAccountProvider";
 import { toastError } from "@/components/Toast";
+import { getActionErrorMessage } from "@/utils/error";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function LearnedPatternsDialog({
   ruleId,
   groupId,
+  disabled,
+  label = "View learned patterns",
 }: {
   ruleId: string;
   groupId: string | null;
+  disabled?: boolean;
+  label?: string;
 }) {
   const { emailAccountId } = useAccount();
 
@@ -45,7 +49,7 @@ export function LearnedPatternsDialog({
       },
       onError: (error) => {
         toastError({
-          description: error.error.serverError || "Unknown error",
+          description: getActionErrorMessage(error.error),
         });
       },
     },
@@ -57,7 +61,7 @@ export function LearnedPatternsDialog({
         <Button
           variant="outline"
           size="sm"
-          Icon={BrainIcon}
+          disabled={disabled}
           onClick={async () => {
             if (!ruleId) return;
             if (groupId) return;
@@ -66,13 +70,13 @@ export function LearnedPatternsDialog({
             execute({ ruleId });
           }}
         >
-          View learned patterns
+          {label}
         </Button>
       </DialogTrigger>
 
-      <DialogContent>
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Learned Patterns</DialogTitle>
+          <DialogTitle>Learned patterns</DialogTitle>
           <DialogDescription>
             Learned patterns are patterns that the AI has learned from your
             email history. When a learned pattern is matched other rules
@@ -83,7 +87,9 @@ export function LearnedPatternsDialog({
         {isExecuting ? (
           <Skeleton className="h-40 w-full" />
         ) : (
-          learnedPatternGroupId && <ViewGroup groupId={learnedPatternGroupId} />
+          learnedPatternGroupId && (
+            <ViewLearnedPatterns groupId={learnedPatternGroupId} />
+          )
         )}
       </DialogContent>
     </Dialog>

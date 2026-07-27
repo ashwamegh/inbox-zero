@@ -1,27 +1,45 @@
 import { NextResponse } from "next/server";
 import { withEmailProvider } from "@/utils/middleware";
 import { messageQuerySchema } from "@/app/api/messages/validation";
-import { createScopedLogger } from "@/utils/logger";
-import { isAssistantEmail } from "@/utils/assistant/is-assistant-email";
 import { GmailLabel } from "@/utils/gmail/label";
 import type { EmailProvider } from "@/utils/email/types";
-
-const logger = createScopedLogger("api/messages");
+import { isGoogleProvider } from "@/utils/email/provider-types";
+import type { Logger } from "@/utils/logger";
 
 export type MessagesResponse = Awaited<ReturnType<typeof getMessages>>;
+
+export const GET = withEmailProvider("messages", async (request) => {
+  const { emailProvider } = request;
+  const { emailAccountId } = request.auth;
+
+  const { searchParams } = new URL(request.url);
+  const query = searchParams.get("q");
+  const pageToken = searchParams.get("pageToken");
+  const r = messageQuerySchema.parse({ q: query, pageToken });
+
+  const result = await getMessages({
+    emailAccountId,
+    query: r.q,
+    pageToken: r.pageToken,
+    emailProvider,
+    logger: request.logger,
+  });
+
+  return NextResponse.json(result);
+});
 
 async function getMessages({
   query,
   pageToken,
   emailAccountId,
-  userEmail,
   emailProvider,
+  logger,
 }: {
   query?: string | null;
   pageToken?: string | null;
   emailAccountId: string;
-  userEmail: string;
   emailProvider: EmailProvider;
+  logger: Logger;
 }) {
   try {
     const { messages, nextPageToken } =
@@ -33,25 +51,8 @@ async function getMessages({
 
     // Filter messages based on provider-specific logic
     const incomingMessages = messages.filter((message) => {
-      const fromEmail = message.headers.from;
-      const toEmail = message.headers.to;
-
-      // Don't include messages from/to the assistant
-      if (
-        isAssistantEmail({
-          userEmail,
-          emailToCheck: fromEmail,
-        }) ||
-        isAssistantEmail({
-          userEmail,
-          emailToCheck: toEmail,
-        })
-      ) {
-        return false;
-      }
-
       // Provider-specific filtering
-      if (emailProvider.name === "google") {
+      if (isGoogleProvider(emailProvider.name)) {
         const isSent = message.labelIds?.includes(GmailLabel.SENT);
         const isDraft = message.labelIds?.includes(GmailLabel.DRAFT);
         const isInbox = message.labelIds?.includes(GmailLabel.INBOX);
@@ -82,21 +83,3 @@ async function getMessages({
     throw error;
   }
 }
-
-export const GET = withEmailProvider(async (request) => {
-  const { emailProvider } = request;
-  const { emailAccountId, email: userEmail } = request.auth;
-
-  const { searchParams } = new URL(request.url);
-  const query = searchParams.get("q");
-  const pageToken = searchParams.get("pageToken");
-  const r = messageQuerySchema.parse({ q: query, pageToken });
-  const result = await getMessages({
-    emailAccountId,
-    query: r.q,
-    pageToken: r.pageToken,
-    userEmail,
-    emailProvider,
-  });
-  return NextResponse.json(result);
-});

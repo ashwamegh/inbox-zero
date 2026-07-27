@@ -1,16 +1,21 @@
-import {
-  type Action,
-  ActionType,
-  type ExecutedAction,
-  type Prisma,
-} from "@prisma/client";
+import { ActionType } from "@/generated/prisma/enums";
+import type { Action, ExecutedAction, Prisma } from "@/generated/prisma/client";
+import { isDraftReplyActionType } from "@/utils/actions/draft-reply";
+
+const DRAFT_REPLY_FIELDS = [
+  { name: "subject" as const, label: "Subject", expandable: true },
+  { name: "content" as const, label: "Content", textArea: true },
+  { name: "to" as const, label: "To", expandable: true },
+  { name: "cc" as const, label: "CC", expandable: true },
+  { name: "bcc" as const, label: "BCC", expandable: true },
+];
 
 export const actionInputs: Record<
   ActionType,
   {
     fields: {
       name:
-        | "label"
+        | "labelId"
         | "subject"
         | "content"
         | "to"
@@ -30,41 +35,14 @@ export const actionInputs: Record<
   [ActionType.LABEL]: {
     fields: [
       {
-        name: "label",
+        name: "labelId",
         label: "Label",
       },
     ],
   },
   [ActionType.DIGEST]: { fields: [] },
-  [ActionType.DRAFT_EMAIL]: {
-    fields: [
-      {
-        name: "subject",
-        label: "Subject",
-        expandable: true,
-      },
-      {
-        name: "content",
-        label: "Content",
-        textArea: true,
-      },
-      {
-        name: "to",
-        label: "To",
-        expandable: true,
-      },
-      {
-        name: "cc",
-        label: "CC",
-        expandable: true,
-      },
-      {
-        name: "bcc",
-        label: "BCC",
-        expandable: true,
-      },
-    ],
-  },
+  [ActionType.DRAFT_EMAIL]: { fields: DRAFT_REPLY_FIELDS },
+  [ActionType.DRAFT_MESSAGING_CHANNEL]: { fields: DRAFT_REPLY_FIELDS },
   [ActionType.REPLY]: {
     fields: [
       {
@@ -114,13 +92,13 @@ export const actionInputs: Record<
   [ActionType.FORWARD]: {
     fields: [
       {
+        name: "to",
+        label: "To",
+      },
+      {
         name: "content",
         label: "Extra Content",
         textArea: true,
-      },
-      {
-        name: "to",
-        label: "To",
       },
       {
         name: "cc",
@@ -135,17 +113,18 @@ export const actionInputs: Record<
     ],
   },
   [ActionType.MARK_SPAM]: { fields: [] },
+  [ActionType.DELETE]: { fields: [] },
   [ActionType.CALL_WEBHOOK]: {
     fields: [
       {
         name: "url",
-        label: "URL",
+        label: "Webhook URL",
         placeholder: "https://example.com/webhook",
       },
     ],
   },
   [ActionType.MARK_READ]: { fields: [] },
-  [ActionType.TRACK_THREAD]: { fields: [] },
+  [ActionType.STAR]: { fields: [] },
   [ActionType.MOVE_FOLDER]: {
     fields: [
       {
@@ -153,6 +132,12 @@ export const actionInputs: Record<
         label: "Folder name",
       },
     ],
+  },
+  [ActionType.NOTIFY_MESSAGING_CHANNEL]: {
+    fields: [],
+  },
+  [ActionType.NOTIFY_SENDER]: {
+    fields: [],
   },
 };
 
@@ -183,27 +168,46 @@ export function getActionFields(fields: Action | ExecutedAction | undefined) {
   return res;
 }
 
-type ActionFieldsSelection = Pick<
-  Prisma.ActionCreateInput,
-  | "type"
-  | "label"
-  | "subject"
-  | "content"
-  | "to"
-  | "cc"
-  | "bcc"
-  | "url"
-  | "folderName"
-  | "folderId"
-  | "delayInMinutes"
->;
+type ActionFieldsSelection = {
+  type: ActionType;
+  label: string | null;
+  labelId: string | null;
+  messagingChannelId: string | null;
+  subject: string | null;
+  content: string | null;
+  to: string | null;
+  cc: string | null;
+  bcc: string | null;
+  url: string | null;
+  folderName: string | null;
+  folderId: string | null;
+  delayInMinutes: number | null;
+  staticAttachments?: Prisma.JsonValue;
+  selectedAttachments?: Prisma.JsonValue;
+};
+
+type SanitizableActionFields = Partial<
+  Omit<ActionFieldsSelection, "staticAttachments" | "selectedAttachments">
+> & {
+  type: ActionType;
+  staticAttachments?: Prisma.JsonValue | null;
+  selectedAttachments?: Prisma.JsonValue | null;
+};
 
 export function sanitizeActionFields(
-  action: Partial<ActionFieldsSelection> & { type: ActionType },
+  action: SanitizableActionFields,
 ): ActionFieldsSelection {
+  const supportsStaticAttachments =
+    action.type === ActionType.DRAFT_EMAIL ||
+    action.type === ActionType.DRAFT_MESSAGING_CHANNEL ||
+    action.type === ActionType.REPLY ||
+    action.type === ActionType.SEND_EMAIL;
+
   const base: ActionFieldsSelection = {
     type: action.type,
     label: null,
+    labelId: null,
+    messagingChannelId: null,
     subject: null,
     content: null,
     to: null,
@@ -213,14 +217,21 @@ export function sanitizeActionFields(
     folderName: null,
     folderId: null,
     delayInMinutes: action.delayInMinutes || null,
+    staticAttachments: supportsStaticAttachments
+      ? (action.staticAttachments ?? undefined)
+      : undefined,
+    selectedAttachments: isDraftReplyActionType(action.type)
+      ? (action.selectedAttachments ?? undefined)
+      : undefined,
   };
 
   switch (action.type) {
     case ActionType.ARCHIVE:
     case ActionType.MARK_SPAM:
     case ActionType.MARK_READ:
-    case ActionType.TRACK_THREAD:
+    case ActionType.STAR:
     case ActionType.DIGEST:
+    case ActionType.DELETE:
       return base;
     case ActionType.MOVE_FOLDER: {
       return {
@@ -233,6 +244,7 @@ export function sanitizeActionFields(
       return {
         ...base,
         label: action.label ?? null,
+        labelId: action.labelId ?? null,
       };
     }
     case ActionType.REPLY: {
@@ -262,9 +274,11 @@ export function sanitizeActionFields(
         bcc: action.bcc ?? null,
       };
     }
-    case ActionType.DRAFT_EMAIL: {
+    case ActionType.DRAFT_EMAIL:
+    case ActionType.DRAFT_MESSAGING_CHANNEL: {
       return {
         ...base,
+        messagingChannelId: action.messagingChannelId ?? null,
         subject: action.subject ?? null,
         content: action.content ?? null,
         to: action.to ?? null,
@@ -272,11 +286,20 @@ export function sanitizeActionFields(
         bcc: action.bcc ?? null,
       };
     }
+    case ActionType.NOTIFY_MESSAGING_CHANNEL: {
+      return {
+        ...base,
+        messagingChannelId: action.messagingChannelId ?? null,
+      };
+    }
     case ActionType.CALL_WEBHOOK: {
       return {
         ...base,
         url: action.url ?? null,
       };
+    }
+    case ActionType.NOTIFY_SENDER: {
+      return base;
     }
     default:
       // biome-ignore lint/correctness/noSwitchDeclarations: intentional exhaustive check

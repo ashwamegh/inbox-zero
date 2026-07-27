@@ -4,7 +4,8 @@ import { useRouter } from "next/navigation";
 import sortBy from "lodash/sortBy";
 import { useState, useCallback, type RefCallback } from "react";
 import type { ParsedMessage } from "@/utils/types";
-import { type ThreadTracker, ThreadTrackerType } from "@prisma/client";
+import { ThreadTrackerType } from "@/generated/prisma/enums";
+import type { ThreadTracker } from "@/generated/prisma/client";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { EmailMessageCell } from "@/components/EmailMessageCell";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,7 @@ import {
 } from "lucide-react";
 import { useThreadsByIds } from "@/hooks/useThreadsByIds";
 import { resolveThreadTrackerAction } from "@/utils/actions/reply-tracking";
-import { toastError, toastSuccess } from "@/components/Toast";
+import { toastError, toastSuccess, toastInfo } from "@/components/Toast";
 import { Loading } from "@/components/Loading";
 import { TablePagination } from "@/components/TablePagination";
 import {
@@ -32,6 +33,10 @@ import { cn } from "@/utils";
 import { CommandShortcut } from "@/components/ui/command";
 import { useTableKeyboardNavigation } from "@/hooks/useTableKeyboardNavigation";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useAccount } from "@/providers/EmailAccountProvider";
+import { isGoogleProvider } from "@/utils/email/provider-types";
+import { MutedText } from "@/components/Typography";
+import { BRAND_NAME } from "@/utils/branding";
 
 export function ReplyTrackerEmails({
   trackers,
@@ -50,6 +55,9 @@ export function ReplyTrackerEmails({
   totalPages: number;
   isAnalyzing: boolean;
 }) {
+  const { provider } = useAccount();
+  const isGmail = isGoogleProvider(provider);
+
   const [selectedEmail, setSelectedEmail] = useState<{
     threadId: string;
     messageId: string;
@@ -123,6 +131,10 @@ export function ReplyTrackerEmails({
       const message = thread.messages.at(-1)!;
 
       if (action === "reply") {
+        if (!isGmail) {
+          showReplyNotSupportedToast();
+          return;
+        }
         setSelectedEmail({ threadId: thread.id, messageId: message.id });
       } else if (action === "resolve") {
         await handleResolve(thread.id, true);
@@ -130,7 +142,7 @@ export function ReplyTrackerEmails({
         await handleResolve(thread.id, false);
       }
     },
-    [sortedThreads, handleResolve],
+    [sortedThreads, handleResolve, isGmail],
   );
 
   const { selectedIndex, setSelectedIndex, getRefCallback } =
@@ -334,9 +346,9 @@ function Row({
             )}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="mr-4 text-nowrap text-sm text-muted-foreground">
+            <MutedText className="mr-4 text-nowrap">
               {formatShortDate(internalDateToDate(message.internalDate))}
-            </div>
+            </MutedText>
 
             {isResolved ? (
               <UnresolveButton
@@ -371,17 +383,25 @@ function NudgeButton({
   onClick: () => void;
 }) {
   const showNudge = type === ThreadTrackerType.AWAITING;
+  const { provider } = useAccount();
+  const isGmail = isGoogleProvider(provider);
+
+  const handleClick = () => {
+    if (!isGmail) {
+      showReplyNotSupportedToast();
+      return;
+    }
+    onClick();
+  };
 
   return (
     <Button
       className="w-full"
       Icon={showNudge ? HandIcon : ReplyIcon}
-      onClick={onClick}
+      onClick={handleClick}
     >
       {showNudge ? "Nudge" : "Reply"}
-      <div className="dark ml-2">
-        <CommandShortcut>R</CommandShortcut>
-      </div>
+      <CommandShortcut className="ml-2">R</CommandShortcut>
     </Button>
   );
 }
@@ -451,9 +471,7 @@ function EmptyState({
       <div className="flex min-h-[200px] flex-col items-center justify-center rounded-md border border-dashed bg-muted p-8 text-center animate-in fade-in-50">
         {isAnalyzing ? (
           <>
-            <p className="text-sm text-muted-foreground">
-              Analyzing your emails...
-            </p>
+            <MutedText>Analyzing your emails...</MutedText>
             <Button
               className="mt-4"
               variant="outline"
@@ -470,7 +488,7 @@ function EmptyState({
             </Button>
           </>
         ) : (
-          <p className="text-sm text-muted-foreground">{message}</p>
+          <MutedText>{message}</MutedText>
         )}
       </div>
     </div>
@@ -500,4 +518,12 @@ function useReplyTrackerKeyboardNav(
     });
 
   return { selectedIndex, setSelectedIndex, getRefCallback };
+}
+
+function showReplyNotSupportedToast() {
+  toastInfo({
+    title: "Reply in your email client",
+    description: `Please use your email client to reply. Replying from within ${BRAND_NAME} not yet supported for Microsoft accounts.`,
+    duration: 5000,
+  });
 }

@@ -2,30 +2,47 @@ import { NextResponse } from "next/server";
 import prisma from "@/utils/prisma";
 import { hasCronSecret, hasPostCronSecret } from "@/utils/cron";
 import { withError } from "@/utils/middleware";
-import { captureException } from "@/utils/error";
-import { hasAiAccess } from "@/utils/premium";
-import { createScopedLogger } from "@/utils/logger";
+import { captureException, isInvalidGrantError } from "@/utils/error";
+import {
+  getPremiumUserFilter,
+  getUserTier,
+  hasAiAccess,
+  premiumEntitlementSelect,
+} from "@/utils/premium";
 import { createManagedOutlookSubscription } from "@/utils/outlook/subscription-manager";
+import type { Logger } from "@/utils/logger";
 
-const logger = createScopedLogger("api/outlook/watch/all");
-
-export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-async function watchAllEmails() {
+export const GET = withError("outlook/watch/all", async (request) => {
+  if (!hasCronSecret(request)) {
+    captureException(
+      new Error("Unauthorized cron request: api/outlook/watch/all"),
+    );
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  return watchAllEmails(request.logger);
+});
+
+export const POST = withError("outlook/watch/all", async (request) => {
+  if (!(await hasPostCronSecret(request))) {
+    captureException(
+      new Error("Unauthorized cron request: api/outlook/watch/all"),
+    );
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  return watchAllEmails(request.logger);
+});
+
+async function watchAllEmails(logger: Logger) {
   const emailAccounts = await prisma.emailAccount.findMany({
     where: {
       account: {
         provider: "microsoft",
       },
-      user: {
-        premium: {
-          OR: [
-            { lemonSqueezyRenewsAt: { gt: new Date() } },
-            { stripeSubscriptionStatus: { in: ["active", "trialing"] } },
-          ],
-        },
-      },
+      ...getPremiumUserFilter(),
     },
     select: {
       id: true,
@@ -41,7 +58,9 @@ async function watchAllEmails() {
       user: {
         select: {
           aiApiKey: true,
-          premium: { select: { tier: true } },
+          premium: {
+            select: premiumEntitlementSelect,
+          },
         },
       },
     },
@@ -60,8 +79,8 @@ async function watchAllEmails() {
       });
 
       const userHasAiAccess = hasAiAccess(
-        emailAccount.user.premium?.tier || null,
-        emailAccount.user.aiApiKey,
+        getUserTier(emailAccount.user.premium),
+        !!emailAccount.user.aiApiKey,
       );
 
       if (!userHasAiAccess) {
@@ -94,16 +113,18 @@ async function watchAllEmails() {
         continue;
       }
 
-      await createManagedOutlookSubscription(emailAccount.id);
+      await createManagedOutlookSubscription({
+        emailAccountId: emailAccount.id,
+        logger,
+      });
     } catch (error) {
       if (error instanceof Error) {
-        const warn = [
-          "invalid_grant",
-          "Mail service not enabled",
-          "Insufficient Permission",
-        ];
+        const warn = ["Mail service not enabled", "Insufficient Permission"];
 
-        if (warn.some((w) => error.message.includes(w))) {
+        if (
+          isInvalidGrantError(error) ||
+          warn.some((w) => error.message.includes(w))
+        ) {
           logger.warn("Not watching emails for user", {
             email: emailAccount.email,
             error,
@@ -118,25 +139,3 @@ async function watchAllEmails() {
 
   return NextResponse.json({ success: true });
 }
-
-export const GET = withError(async (request) => {
-  if (!hasCronSecret(request)) {
-    captureException(
-      new Error("Unauthorized cron request: api/outlook/watch/all"),
-    );
-    return new Response("Unauthorized", { status: 401 });
-  }
-
-  return watchAllEmails();
-});
-
-export const POST = withError(async (request) => {
-  if (!(await hasPostCronSecret(request))) {
-    captureException(
-      new Error("Unauthorized cron request: api/outlook/watch/all"),
-    );
-    return new Response("Unauthorized", { status: 401 });
-  }
-
-  return watchAllEmails();
-});

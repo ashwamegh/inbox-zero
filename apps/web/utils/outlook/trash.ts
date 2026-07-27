@@ -1,16 +1,20 @@
 import type { OutlookClient } from "@/utils/outlook/client";
 import { publishDelete, type TinybirdEmailAction } from "@inboxzero/tinybird";
-import { createScopedLogger } from "@/utils/logger";
+import type { Logger } from "@/utils/logger";
+import { runWithBoundedConcurrency } from "@/utils/async";
+import { withOutlookRetry } from "@/utils/outlook/retry";
+import { processThreadMessagesFallback } from "@/utils/outlook/thread-helpers";
 
-const logger = createScopedLogger("outlook/trash");
+const THREAD_TRASH_CONCURRENCY = 2;
 
 export async function trashThread(options: {
   client: OutlookClient;
   threadId: string;
   ownerEmail: string;
   actionSource: TinybirdEmailAction["actionSource"];
+  logger: Logger;
 }) {
-  const { client, threadId, ownerEmail, actionSource } = options;
+  const { client, threadId, ownerEmail, actionSource, logger } = options;
 
   try {
     // In Outlook, trashing is moving to the Deleted Items folder
@@ -23,26 +27,28 @@ export async function trashThread(options: {
       .filter(`conversationId eq '${escapedThreadId}'`)
       .get();
 
-    const trashPromise = Promise.all(
-      messages.value.map(async (message: { id: string }) => {
+    const trashPromise = runWithBoundedConcurrency({
+      items: messages.value.map((message: { id: string }) => message.id),
+      concurrency: THREAD_TRASH_CONCURRENCY,
+      run: async (messageId) => {
         try {
-          return await client
-            .getClient()
-            .api(`/me/messages/${message.id}/move`)
-            .post({
-              destinationId: "deleteditems",
-            });
+          return await withOutlookRetry(
+            () =>
+              client.getClient().api(`/me/messages/${messageId}/move`).post({
+                destinationId: "deleteditems",
+              }),
+            logger,
+          );
         } catch (error) {
-          // Log the error but don't fail the entire operation
           logger.warn("Failed to move message to trash", {
-            messageId: message.id,
+            messageId,
             threadId,
-            error: error instanceof Error ? error.message : error,
+            error,
           });
           return null;
         }
-      }),
-    );
+      },
+    });
 
     const publishPromise = publishDelete({
       ownerEmail,
@@ -93,50 +99,22 @@ export async function trashThread(options: {
     });
 
     try {
-      // Try to get messages by conversationId using a different endpoint
-      const messages = await client
-        .getClient()
-        .api("/me/messages")
-        .select("id")
-        .get();
-
-      // Filter messages by conversationId manually
-      const threadMessages = messages.value.filter(
-        (message: { conversationId: string }) =>
-          message.conversationId === threadId,
-      );
-
-      if (threadMessages.length > 0) {
-        // Move each message in the thread to the deleted items folder
-        const movePromises = threadMessages.map(
-          async (message: { id: string }) => {
-            try {
-              return await client
+      await processThreadMessagesFallback({
+        client,
+        threadId,
+        logger,
+        messageHandler: (messageId) =>
+          withOutlookRetry(
+            () =>
+              client
                 .getClient()
-                .api(`/me/messages/${message.id}/move`)
-                .post({
-                  destinationId: "deleteditems",
-                });
-            } catch (moveError) {
-              // Log the error but don't fail the entire operation
-              logger.warn("Failed to move message to trash", {
-                messageId: message.id,
-                threadId,
-                error:
-                  moveError instanceof Error ? moveError.message : moveError,
-              });
-              return null;
-            }
-          },
-        );
-
-        await Promise.allSettled(movePromises);
-      } else {
-        // If no messages found, try treating threadId as a messageId
-        await client.getClient().api(`/me/messages/${threadId}/move`).post({
-          destinationId: "deleteditems",
-        });
-      }
+                .api(`/me/messages/${messageId}/move`)
+                .post({ destinationId: "deleteditems" }),
+            logger,
+          ),
+        noMessagesMessage:
+          "No messages found for conversationId, skipping trash move",
+      });
 
       // Publish the delete action
       try {

@@ -7,6 +7,12 @@ import { useSession } from "@/utils/auth-client";
 import { usePathname, useSearchParams } from "next/navigation";
 import { env } from "@/env";
 import { useAccount } from "@/providers/EmailAccountProvider";
+import {
+  getAppPageViewProperties,
+  PRODUCT_ANALYTICS_EVENTS,
+} from "@/utils/analytics/product";
+import { ONE_DAY_MS } from "@/utils/date";
+import { scheduleAfterPageLoad } from "@/utils/schedule-after-page-load";
 
 // based on: https://posthog.com/docs/libraries/next-js
 
@@ -23,6 +29,14 @@ export function PostHogPageview() {
       posthog.capture("$pageview", {
         $current_url: url,
       });
+
+      const appPageProperties = getAppPageViewProperties({
+        pathname,
+        searchParams,
+      });
+      if (appPageProperties) {
+        posthog.capture(PRODUCT_ANALYTICS_EVENTS.pageViewed, appPageProperties);
+      }
     }
   }, [pathname, searchParams]);
 
@@ -34,11 +48,17 @@ export function PostHogIdentify() {
   const { emailAccount } = useAccount();
 
   useEffect(() => {
-    if (session?.user.email)
-      posthog.identify(session.user.email, {
-        email: session.user.email,
-      });
-  }, [session?.user.email]);
+    const user = session?.user;
+    if (!user?.email) return;
+
+    const signedUpOverOneDayAgo =
+      Date.now() - new Date(user.createdAt).getTime() > ONE_DAY_MS;
+
+    posthog.identify(user.email, {
+      email: user.email,
+      ...(signedUpOverOneDayAgo && { signed_up_over_1_day: true }),
+    });
+  }, [session?.user.createdAt, session?.user.email]);
 
   useEffect(() => {
     // Set super properties that will be included with all events
@@ -66,9 +86,42 @@ if (typeof window !== "undefined" && env.NEXT_PUBLIC_POSTHOG_KEY) {
   posthog.init(env.NEXT_PUBLIC_POSTHOG_KEY, {
     api_host: env.NEXT_PUBLIC_POSTHOG_API_HOST, // https://posthog.com/docs/advanced/proxy/nextjs
     capture_pageview: false, // Disable automatic pageview capture, as we capture manually
+    disable_session_recording: true,
+    disable_surveys: true,
   });
 }
 
 export function PostHogProvider({ children }: { children: React.ReactNode }) {
-  return <PHProvider client={posthog}>{children}</PHProvider>;
+  return (
+    <PHProvider client={posthog}>
+      {children}
+      <DeferredPostHogFeatures />
+    </PHProvider>
+  );
+}
+
+let deferredFeaturesEnabled = false;
+
+function DeferredPostHogFeatures() {
+  useEffect(() => {
+    if (!env.NEXT_PUBLIC_POSTHOG_KEY || deferredFeaturesEnabled) return;
+
+    const enableDeferredFeatures = () => {
+      if (deferredFeaturesEnabled) return;
+
+      deferredFeaturesEnabled = true;
+      posthog.set_config({
+        disable_session_recording: false,
+        disable_surveys: false,
+      });
+      posthog.reloadFeatureFlags();
+    };
+
+    return scheduleAfterPageLoad(enableDeferredFeatures, {
+      fallbackDelay: 2000,
+      idleTimeout: 5000,
+    });
+  }, []);
+
+  return null;
 }

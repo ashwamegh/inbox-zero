@@ -7,17 +7,17 @@ import { Placeholder } from "@tiptap/extension-placeholder";
 import { useImperativeHandle, forwardRef } from "react";
 import { cn } from "@/utils";
 import { createLabelMentionExtension } from "./extensions/LabelMention";
-import type { EmailLabel } from "@/providers/EmailProvider";
+import type { EmailLabel } from "@/providers/email-label-types";
 import "./SimpleRichTextEditor.css";
 
 interface SimpleRichTextEditorProps {
-  placeholder?: string;
   className?: string;
   defaultValue?: string;
-  minHeight?: number;
-  userLabels?: EmailLabel[];
-  onClearContents?: () => void;
   editable?: boolean;
+  minHeight?: number;
+  onClearContents?: () => void;
+  placeholder?: string;
+  userLabels?: EmailLabel[];
 }
 
 export interface SimpleRichTextEditorRef {
@@ -91,7 +91,7 @@ export const SimpleRichTextEditor = forwardRef<
           class: cn(
             "p-3 max-w-none focus:outline-none max-w-none simple-rich-editor",
             "prose prose-sm",
-            "prose-headings:font-cal prose-headings:text-foreground",
+            "prose-headings:font-title prose-headings:text-foreground",
             "prose-p:text-foreground prose-li:text-foreground",
             "prose-strong:text-foreground prose-strong:font-semibold",
             "prose-ul:text-foreground prose-ol:text-foreground",
@@ -132,9 +132,7 @@ export const SimpleRichTextEditor = forwardRef<
             editor.commands.setContent(newContent);
           }
         },
-        getMarkdown: () => {
-          return editor?.storage.markdown.getMarkdown() || "";
-        },
+        getMarkdown: () => editor?.storage.markdown.getMarkdown() || "",
       }),
       [editor],
     );

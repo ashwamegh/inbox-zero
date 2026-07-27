@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { getEmailTerminology } from "@/utils/terminology";
@@ -9,24 +9,26 @@ import {
   ArchiveIcon,
   ArrowLeftIcon,
   BarChartBigIcon,
-  BookIcon,
   BrushIcon,
+  CalendarIcon,
   ChevronDownIcon,
   ChevronRightIcon,
-  CrownIcon,
   FileIcon,
+  FileTextIcon,
+  HardDriveIcon,
   InboxIcon,
   type LucideIcon,
   MailsIcon,
+  MessageSquareIcon,
   MessagesSquareIcon,
   PenIcon,
   PersonStandingIcon,
   RatioIcon,
   SendIcon,
-  SettingsIcon,
   SparklesIcon,
   TagIcon,
   Users2Icon,
+  ZapIcon,
 } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { useComposeModal } from "@/providers/ComposeModalProvider";
@@ -49,14 +51,18 @@ import { SideNavMenu } from "@/components/SideNavMenu";
 import { CommandShortcut } from "@/components/ui/command";
 import { useSplitLabels } from "@/hooks/useLabels";
 import { LoadingContent } from "@/components/LoadingContent";
-import { useCleanerEnabled } from "@/hooks/useFeatureFlags";
-import { ClientOnly } from "@/components/ClientOnly";
+import {
+  useCleanerEnabled,
+  useIntegrationsEnabled,
+  useMeetingBriefsEnabled,
+} from "@/hooks/useFeatureFlags";
 import { AccountSwitcher } from "@/components/AccountSwitcher";
 import { useAccount } from "@/providers/EmailAccountProvider";
 import { prefixPath } from "@/utils/path";
-import { ReferralDialog } from "@/components/ReferralDialog";
 import { isGoogleProvider } from "@/utils/email/provider-types";
 import { NavUser } from "@/components/NavUser";
+import { PremiumCard } from "@/components/PremiumCard";
+import { FeedbackDialog } from "@/components/FeedbackDialog";
 
 type NavItem = {
   name: string;
@@ -65,56 +71,111 @@ type NavItem = {
   target?: "_blank";
   count?: number;
   hideInMail?: boolean;
+  beta?: boolean;
+  new?: boolean;
 };
 
 export const useNavigation = () => {
-  // When we have features in early access, we can filter the navigation items
   const showCleaner = useCleanerEnabled();
-  const { emailAccountId, provider } = useAccount();
+  const showMeetingBriefs = useMeetingBriefsEnabled();
+  const showIntegrations = useIntegrationsEnabled();
 
-  // Assistant category items
-  const navItems: NavItem[] = useMemo(
+  const { emailAccount, emailAccountId, provider } = useAccount();
+  const currentEmailAccountId = emailAccount?.id || emailAccountId;
+
+  const manageItems: NavItem[] = useMemo(
     () => [
       {
+        name: "Chat",
+        href: prefixPath(currentEmailAccountId, "/assistant"),
+        icon: MessageSquareIcon,
+      },
+      {
         name: "Assistant",
-        href: prefixPath(emailAccountId, "/automation"),
+        href: prefixPath(currentEmailAccountId, "/automation"),
         icon: SparklesIcon,
       },
       {
+        name: "Channels",
+        href: prefixPath(currentEmailAccountId, "/channels"),
+        icon: MessagesSquareIcon,
+      },
+    ],
+    [currentEmailAccountId],
+  );
+
+  const cleanupItems: NavItem[] = useMemo(
+    () => [
+      {
         name: "Bulk Unsubscribe",
-        href: prefixPath(emailAccountId, "/bulk-unsubscribe"),
+        href: prefixPath(currentEmailAccountId, "/bulk-unsubscribe"),
         icon: MailsIcon,
       },
-      ...(isGoogleProvider(provider)
+      {
+        name: "Bulk Archive",
+        href: prefixPath(currentEmailAccountId, "/bulk-archive"),
+        icon: ArchiveIcon,
+      },
+      {
+        name: "Analytics",
+        href: prefixPath(currentEmailAccountId, "/stats"),
+        icon: BarChartBigIcon,
+      },
+      ...(isGoogleProvider(provider) && showCleaner
         ? [
             {
               name: "Deep Clean",
-              href: prefixPath(emailAccountId, "/clean"),
+              href: prefixPath(currentEmailAccountId, "/clean"),
               icon: BrushIcon,
-            },
-            {
-              name: "Analytics",
-              href: prefixPath(emailAccountId, "/stats"),
-              icon: BarChartBigIcon,
+              beta: true,
             },
           ]
         : []),
     ],
-    [emailAccountId, provider],
+    [currentEmailAccountId, provider, showCleaner],
   );
 
-  const navItemsFiltered = useMemo(
-    () =>
-      navItems.filter((item) => {
-        if (item.href === `/${emailAccountId}/clean` || item.href === "/clean")
-          return showCleaner;
-        return true;
-      }),
-    [showCleaner, emailAccountId, navItems],
+  const moreItems: NavItem[] = useMemo(
+    () => [
+      {
+        name: "Calendars",
+        href: prefixPath(currentEmailAccountId, "/calendars"),
+        icon: CalendarIcon,
+      },
+      ...(showMeetingBriefs
+        ? [
+            {
+              name: "Meeting Briefs",
+              href: prefixPath(currentEmailAccountId, "/briefs"),
+              icon: FileTextIcon,
+            },
+          ]
+        : []),
+      {
+        name: "Attachments",
+        href: prefixPath(currentEmailAccountId, "/drive"),
+        icon: HardDriveIcon,
+        new: false,
+      },
+      ...(showIntegrations
+        ? [
+            {
+              name: "Integrations",
+              href: prefixPath(currentEmailAccountId, "/integrations"),
+              icon: ZapIcon,
+              beta: true,
+            },
+          ]
+        : []),
+    ],
+    [currentEmailAccountId, showMeetingBriefs, showIntegrations],
   );
 
   return {
-    navItems: navItemsFiltered,
+    homeHref: prefixPath(currentEmailAccountId, "/automation"),
+    manageItems,
+    cleanupItems,
+    moreItems,
   };
 };
 
@@ -171,9 +232,16 @@ const bottomMailLinks: NavItem[] = [
 
 export function SideNav({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const navigation = useNavigation();
-  const { emailAccountId } = useAccount();
   const path = usePathname();
   const showMailNav = path.includes("/mail") || path.includes("/compose");
+  const isMoreActive = navigation.moreItems.some(
+    (item) => path === item.href || path.startsWith(`${item.href}/`),
+  );
+  const [showMoreItems, setShowMoreItems] = useState(isMoreActive);
+
+  useEffect(() => {
+    if (isMoreActive) setShowMoreItems(true);
+  }, [isMoreActive]);
 
   const visibleBottomLinks = useMemo(
     () =>
@@ -196,7 +264,7 @@ export function SideNav({ ...props }: React.ComponentProps<typeof Sidebar>) {
       <SidebarHeader className="gap-0 pb-0">
         {state.includes("left-sidebar") ? (
           <div className="flex items-center rounded-md pl-2 pr-0.5 py-3 text-foreground justify-between">
-            <Link href="/setup">
+            <Link href={navigation.homeHref}>
               <Logo className="h-3.5" />
             </Link>
             <SidebarTrigger name="left-sidebar" />
@@ -216,41 +284,53 @@ export function SideNav({ ...props }: React.ComponentProps<typeof Sidebar>) {
           {showMailNav ? (
             <MailNav path={path} />
           ) : (
-            <SidebarGroup>
-              <SidebarGroupLabel>Platform</SidebarGroupLabel>
-              <SideNavMenu items={navigation.navItems} activeHref={path} />
-            </SidebarGroup>
+            <>
+              <SidebarGroup>
+                <SidebarGroupLabel>Manage</SidebarGroupLabel>
+                <SideNavMenu items={navigation.manageItems} activeHref={path} />
+              </SidebarGroup>
+              <SidebarGroup>
+                <SidebarGroupLabel>Cleanup</SidebarGroupLabel>
+                <SideNavMenu
+                  items={navigation.cleanupItems}
+                  activeHref={path}
+                />
+              </SidebarGroup>
+              <SidebarGroup>
+                <SidebarGroupLabel asChild>
+                  <button
+                    type="button"
+                    className="w-full cursor-pointer gap-1"
+                    onClick={() => setShowMoreItems((value) => !value)}
+                    aria-expanded={showMoreItems}
+                  >
+                    {showMoreItems ? (
+                      <ChevronDownIcon className="size-3.5" />
+                    ) : (
+                      <ChevronRightIcon className="size-3.5" />
+                    )}
+                    <span>Tools</span>
+                  </button>
+                </SidebarGroupLabel>
+                {showMoreItems && (
+                  <SideNavMenu items={navigation.moreItems} activeHref={path} />
+                )}
+              </SidebarGroup>
+            </>
           )}
         </SidebarGroupContent>
       </SidebarContent>
 
+      <PremiumCard isCollapsed={!state.includes("left-sidebar")} />
+
       <SidebarFooter className="pb-4">
-        <ClientOnly>
-          <ReferralDialog />
-        </ClientOnly>
-
-        <SidebarMenuButton asChild>
-          <Link href="https://docs.getinboxzero.com" target="_blank">
-            <BookIcon className="size-4" />
-            <span className="font-semibold">Help Center</span>
-          </Link>
-        </SidebarMenuButton>
-
-        <SidebarMenuButton asChild>
-          <Link href="/premium">
-            <CrownIcon className="size-4" />
-            <span className="font-semibold">Premium</span>
-          </Link>
-        </SidebarMenuButton>
-
-        <SidebarMenuButton asChild>
-          <Link href={prefixPath(emailAccountId, "/settings")}>
-            <SettingsIcon className="size-4" />
-            <span className="font-semibold">Settings</span>
-          </Link>
-        </SidebarMenuButton>
-
         <SideNavMenu items={visibleBottomLinks} activeHref={path} />
+
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <FeedbackDialog />
+          </SidebarMenuItem>
+        </SidebarMenu>
 
         <NavUser />
       </SidebarFooter>

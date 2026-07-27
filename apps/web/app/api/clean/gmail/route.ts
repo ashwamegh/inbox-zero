@@ -1,17 +1,16 @@
-import { type NextRequest, NextResponse } from "next/server";
-import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
+import { NextResponse } from "next/server";
 import { z } from "zod";
-import { withError } from "@/utils/middleware";
+import { withError, type RequestWithLogger } from "@/utils/middleware";
 import { getGmailClientWithRefresh } from "@/utils/gmail/client";
 import { GmailLabel, labelThread } from "@/utils/gmail/label";
 import { SafeError } from "@/utils/error";
 import prisma from "@/utils/prisma";
 import { isDefined } from "@/utils/types";
-import { createScopedLogger } from "@/utils/logger";
-import { CleanAction } from "@prisma/client";
+import type { Logger } from "@/utils/logger";
+import { CleanAction } from "@/generated/prisma/enums";
 import { updateThread } from "@/utils/redis/clean";
-
-const logger = createScopedLogger("api/clean/gmail");
+import { withQstashOrInternal } from "@/utils/qstash";
+import { assertCleanerApiEnabled } from "@/utils/cleaner-feature";
 
 const cleanGmailSchema = z.object({
   emailAccountId: z.string(),
@@ -34,7 +33,8 @@ async function performGmailAction({
   processedLabelId,
   jobId,
   action,
-}: CleanGmailBody) {
+  logger,
+}: CleanGmailBody & { logger: Logger }) {
   const account = await prisma.emailAccount.findUnique({
     where: { id: emailAccountId },
     select: {
@@ -57,6 +57,7 @@ async function performGmailAction({
     refreshToken: account.account.refresh_token,
     expiresAt: account.account.expires_at?.getTime() || null,
     emailAccountId,
+    logger,
   });
 
   const shouldArchive = markDone && action === CleanAction.ARCHIVE;
@@ -138,11 +139,17 @@ async function saveToDatabase({
 }
 
 export const POST = withError(
-  verifySignatureAppRouter(async (request: NextRequest) => {
+  "clean/gmail",
+  withQstashOrInternal(async (request: RequestWithLogger) => {
+    assertCleanerApiEnabled();
+
     const json = await request.json();
     const body = cleanGmailSchema.parse(json);
 
-    await performGmailAction(body);
+    await performGmailAction({
+      ...body,
+      logger: request.logger,
+    });
 
     return NextResponse.json({ success: true });
   }),

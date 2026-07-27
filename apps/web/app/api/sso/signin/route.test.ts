@@ -1,5 +1,16 @@
-// Mock server-only as per testing guidelines
-vi.mock("server-only", () => ({}));
+vi.mock("@inboxzero/loops", () => ({
+  createContact: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@inboxzero/resend", () => ({
+  createContact: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@inboxzero/tinybird", () => ({
+  publishArchive: vi.fn().mockResolvedValue(undefined),
+  publishDelete: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@inboxzero/tinybird-ai-analytics", () => ({
+  publishAiCall: vi.fn().mockResolvedValue(undefined),
+}));
 
 // Mock the auth config
 vi.mock("@/utils/auth", () => ({
@@ -10,12 +21,8 @@ vi.mock("@/utils/auth", () => ({
   },
 }));
 
-// Mock the logger
-vi.mock("@/utils/logger", () => ({
-  createScopedLogger: vi.fn(() => ({
-    info: vi.fn(),
-    error: vi.fn(),
-  })),
+vi.mock("@/utils/oauth/login-providers", () => ({
+  getEnabledLoginProviders: vi.fn(() => new Set(["sso"])),
 }));
 
 // Mock Prisma
@@ -27,22 +34,22 @@ vi.mock("@/utils/prisma", () => ({
   },
 }));
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { betterAuthConfig } from "@/utils/auth";
-import { SafeError } from "@/utils/error";
-import { createScopedLogger } from "@/utils/logger";
+import { getEnabledLoginProviders } from "@/utils/oauth/login-providers";
 import prisma from "@/utils/prisma";
 import { GET } from "./route";
 
 const mockBetterAuthConfig = vi.mocked(betterAuthConfig);
-const mockLogger = vi.mocked(createScopedLogger);
+const mockGetEnabledLoginProviders = vi.mocked(getEnabledLoginProviders);
 
 describe("SSO Signin Route", () => {
   const mockContext = { params: Promise.resolve({}) };
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetEnabledLoginProviders.mockReturnValue(new Set(["sso"]));
   });
 
   // Helper function to create mock NextRequest with search params
@@ -67,20 +74,10 @@ describe("SSO Signin Route", () => {
       const responseBody = await response.json();
 
       expect(response.status).toBe(400);
-      expect(responseBody).toEqual({
-        error: {
-          issues: [
-            {
-              code: "invalid_type",
-              expected: "string",
-              message: "Expected string, received null",
-              path: ["email"],
-              received: "null",
-            },
-          ],
-        },
-        isKnownError: true,
-      });
+      expect(responseBody.isKnownError).toBe(true);
+      expect(responseBody.error.issues).toHaveLength(1);
+      expect(responseBody.error.issues[0].code).toBe("invalid_type");
+      expect(responseBody.error.issues[0].path).toEqual(["email"]);
     });
 
     test("should return 400 when organization name parameter is missing", async () => {
@@ -90,24 +87,34 @@ describe("SSO Signin Route", () => {
       const responseBody = await response.json();
 
       expect(response.status).toBe(400);
-      expect(responseBody).toEqual({
-        error: {
-          issues: [
-            {
-              code: "invalid_type",
-              expected: "string",
-              message: "Expected string, received null",
-              path: ["organizationSlug"],
-              received: "null",
-            },
-          ],
-        },
-        isKnownError: true,
-      });
+      expect(responseBody.isKnownError).toBe(true);
+      expect(responseBody.error.issues).toHaveLength(1);
+      expect(responseBody.error.issues[0].code).toBe("invalid_type");
+      expect(responseBody.error.issues[0].path).toEqual(["organizationSlug"]);
     });
   });
 
   describe("Organization-based provider lookup", () => {
+    test("should return 400 when SSO login is disabled", async () => {
+      mockGetEnabledLoginProviders.mockReturnValue(new Set(["google"]));
+
+      const request = createMockRequest({
+        email: "user@example.com",
+        organizationSlug: "test-org",
+      });
+
+      const response = await GET(request, mockContext);
+      const responseBody = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(responseBody).toEqual({
+        error: "SSO login is not enabled",
+        isKnownError: true,
+      });
+      expect(prisma.ssoProvider.findFirst).not.toHaveBeenCalled();
+      expect(mockBetterAuthConfig.api.signInSSO).not.toHaveBeenCalled();
+    });
+
     test("should find provider by organization slug", async () => {
       const mockSignInSSOResponse = { url: "https://sso.example.com/signin" };
       mockBetterAuthConfig.api.signInSSO.mockResolvedValue(
@@ -143,6 +150,8 @@ describe("SSO Signin Route", () => {
         body: {
           providerId: "test-provider-id",
           callbackURL: "/accounts",
+          email: "user@example.com",
+          loginHint: "user@example.com",
         },
       });
 
@@ -312,6 +321,8 @@ describe("SSO Signin Route", () => {
         body: {
           providerId: "test-provider",
           callbackURL: "/accounts",
+          email: "user@example.com",
+          loginHint: "user@example.com",
         },
       });
     });

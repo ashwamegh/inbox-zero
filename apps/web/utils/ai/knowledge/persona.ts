@@ -2,19 +2,15 @@ import { z } from "zod";
 import { createScopedLogger } from "@/utils/logger";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
 import type { EmailForLLM } from "@/utils/types";
-import { getModel } from "@/utils/llms/model";
+import { getModelForUseCase, LlmUseCase } from "@/utils/llms/use-cases";
 import { createGenerateObject } from "@/utils/llms";
 import { USER_ROLES } from "@/utils/constants/user-roles";
-import { stringifyEmail } from "@/utils/stringify-email";
+import { getEmailListPrompt } from "@/utils/ai/helpers";
 
 const logger = createScopedLogger("persona-analyzer");
 
 export const personaAnalysisSchema = z.object({
-  persona: z
-    .string()
-    .describe(
-      "The identified professional role (can be from the provided list or a custom role if evidence strongly suggests otherwise)",
-    ),
+  persona: z.string().trim().min(1).describe("Role label for onboarding."),
   industry: z
     .string()
     .describe(
@@ -71,7 +67,7 @@ Analyze the user's emails to determine their most likely professional role or pe
 Consider these common personas as defaults, but feel free to suggest a more specific or different role if the evidence strongly points elsewhere:
 ${rolesList}
 
-If the user doesn't clearly fit into one of these categories, provide a custom persona that better describes their role based on the email evidence.
+Return persona as a short 1-3 word role label. Use "Individual" for mostly private or household email, or a custom label if no listed role fits.
 
 Base your analysis on:
 - Topics discussed in emails
@@ -90,15 +86,19 @@ This is important: You are analyzing the persona of ${emailAccount.email}. Look 
 
 Here are the emails they've sent:
 <emails>
-${emails.map((e) => `<email>\n${stringifyEmail(e, 1000)}\n</email>`).join("\n")}
+${getEmailListPrompt({ messages: emails, messageMaxLength: 1000 })}
 </emails>`;
 
-  const modelOptions = getModel(emailAccount.user);
+  const modelOptions = getModelForUseCase(
+    emailAccount.user,
+    LlmUseCase.PersonaAnalysis,
+  );
 
   const generateObject = createGenerateObject({
-    userEmail: emailAccount.email,
+    emailAccount,
     label: "Persona Analysis",
     modelOptions,
+    promptHardening: { trust: "untrusted", level: "none" },
   });
 
   const result = await generateObject({

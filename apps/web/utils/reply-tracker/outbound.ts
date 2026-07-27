@@ -1,222 +1,192 @@
 import type { EmailAccountWithAI } from "@/utils/llms/types";
-import type { EmailForLLM, ParsedMessage } from "@/utils/types";
-import { aiCheckIfNeedsReply } from "@/utils/ai/reply/check-if-needs-reply";
+import type { ParsedMessage } from "@/utils/types";
+import { aiDetermineThreadStatus } from "@/utils/ai/reply/determine-thread-status";
 import prisma from "@/utils/prisma";
-import { ThreadTrackerType } from "@prisma/client";
-import { createScopedLogger, type Logger } from "@/utils/logger";
-import { getEmailForLLM } from "@/utils/get-email-from-message";
-import { internalDateToDate } from "@/utils/date";
+import type { Logger } from "@/utils/logger";
+import { internalDateToDate, sortByInternalDate } from "@/utils/date";
 import type { EmailProvider } from "@/utils/email/types";
+import { applyThreadStatusLabel } from "./label-helpers";
+import { updateThreadTrackers } from "@/utils/reply-tracker/handle-conversation-status";
+import {
+  CONVERSATION_STATUS_TYPES,
+  type ConversationStatus,
+} from "@/utils/reply-tracker/conversation-status-config";
+import {
+  acquireOutboundThreadStatusLock,
+  clearOutboundThreadStatusLock,
+  markOutboundThreadStatusProcessed,
+} from "@/utils/redis/outbound-thread-status";
+import { buildThreadStatusMessagesForLLM } from "@/utils/reply-tracker/thread-status-context";
 
 export async function handleOutboundReply({
   emailAccount,
   message,
   provider,
+  logger,
 }: {
   emailAccount: EmailAccountWithAI;
   message: ParsedMessage;
   provider: EmailProvider;
+  logger: Logger;
 }) {
-  const logger = createScopedLogger("reply-tracker/outbound").with({
+  logger = logger.with({
     email: emailAccount.email,
     messageId: message.id,
     threadId: message.threadId,
   });
 
-  const isEnabled = await isOutboundTrackingEnabled({
-    email: emailAccount.email,
+  const enabledStatuses = await getEnabledStatuses({
+    emailAccountId: emailAccount.id,
   });
-  if (!isEnabled) {
+  if (!enabledStatuses.length) {
     logger.info("Outbound reply tracking disabled, skipping.");
     return;
   }
 
-  logger.info("Checking outbound reply");
+  const idempotencyKey = {
+    emailAccountId: emailAccount.id,
+    threadId: message.threadId,
+    messageId: message.id,
+  };
 
-  // Resolve existing NEEDS_REPLY trackers for this thread
-  await resolveReplyTrackers(provider, emailAccount.userId, message.threadId);
-
-  const threadMessages = await provider.getThreadMessages(message.threadId);
-  if (!threadMessages?.length) {
-    logger.error("No thread messages found, cannot proceed.");
+  const lockToken = await acquireOutboundThreadStatusLock(idempotencyKey);
+  if (!lockToken) {
+    logger.info(
+      "Outbound thread status already processed or currently processing, skipping.",
+    );
     return;
   }
 
-  const { isLatest, sortedMessages } = isMessageLatestInThread(
-    message,
-    threadMessages,
-    logger,
-  );
-  if (!isLatest) {
-    logger.info(
-      "Skipping outbound reply check: message is not the latest in the thread",
+  let processedSuccessfully = false;
+
+  try {
+    logger.info("Determining thread status for outbound message");
+
+    const threadMessages = await provider.getThreadMessages(message.threadId);
+    if (!threadMessages?.length) {
+      logger.error("No thread messages found, cannot proceed.");
+      return;
+    }
+
+    const { isLatest, sortedMessages } = isMessageLatestInThread(
+      message,
+      threadMessages,
     );
-    return; // Stop processing if not the latest
-  }
+    if (!isLatest) {
+      logger.info(
+        "Outbound message is not the latest in the thread, proceeding anyway.",
+        {
+          processingMessageId: message.id,
+          actualLatestMessageId: sortedMessages.at(-1)?.id,
+        },
+      );
+    }
 
-  const { messageToSendForLLM, threadContextMessagesForLLM } =
-    prepareDataForAICheck(message, sortedMessages);
+    const threadMessagesForLLM =
+      buildThreadStatusMessagesForLLM(sortedMessages);
 
-  const aiResult = await aiCheckIfNeedsReply({
-    emailAccount,
-    messageToSend: messageToSendForLLM,
-    threadContextMessages: threadContextMessagesForLLM,
-  });
+    if (!threadMessagesForLLM.length) {
+      logger.error("No messages for AI analysis");
+      return;
+    }
 
-  if (aiResult.needsReply) {
-    logger.info("Needs reply. Creating reply tracker outbound");
-
-    await createReplyTrackerOutbound({
-      provider,
-      emailAccountId: emailAccount.id,
-      threadId: message.threadId,
-      messageId: message.id,
-      sentAt: internalDateToDate(message.internalDate),
-      logger,
+    const aiResult = await aiDetermineThreadStatus({
+      emailAccount,
+      threadMessages: threadMessagesForLLM,
+      userSentLastEmail: true,
     });
-  } else {
-    logger.trace("No need to reply");
+
+    logger.info("AI determined thread status", { status: aiResult.status });
+
+    if (!enabledStatuses.includes(aiResult.status)) {
+      logger.info(
+        "Rule for determined status is disabled, skipping label application",
+        { status: aiResult.status },
+      );
+      return;
+    }
+
+    await Promise.all([
+      applyThreadStatusLabel({
+        emailAccountId: emailAccount.id,
+        threadId: message.threadId,
+        messageId: message.id,
+        systemType: aiResult.status,
+        provider,
+        logger,
+      }),
+      updateThreadTrackers({
+        emailAccountId: emailAccount.id,
+        threadId: message.threadId,
+        messageId: message.id,
+        sentAt: internalDateToDate(message.internalDate),
+        status: aiResult.status,
+      }),
+    ]);
+
+    processedSuccessfully = true;
+  } finally {
+    if (processedSuccessfully) {
+      const markedAsProcessed = await markOutboundThreadStatusProcessed({
+        ...idempotencyKey,
+        lockToken,
+      }).catch((error) => {
+        logger.error("Failed to mark outbound thread status as processed", {
+          error,
+        });
+        return false;
+      });
+      if (!markedAsProcessed) {
+        logger.warn(
+          "Skipped marking outbound thread status as processed because lock was no longer owned.",
+        );
+      }
+    } else {
+      const lockCleared = await clearOutboundThreadStatusLock({
+        ...idempotencyKey,
+        lockToken,
+      }).catch((error) => {
+        logger.error("Failed to clear outbound thread status lock", { error });
+        return false;
+      });
+      if (!lockCleared) {
+        logger.warn(
+          "Skipped clearing outbound thread status lock because lock was no longer owned.",
+        );
+      }
+    }
   }
 }
 
-async function createReplyTrackerOutbound({
-  provider,
+async function getEnabledStatuses({
   emailAccountId,
-  threadId,
-  messageId,
-  sentAt,
-  logger,
 }: {
-  provider: EmailProvider;
   emailAccountId: string;
-  threadId: string;
-  messageId: string;
-  sentAt: Date;
-  logger: Logger;
-}) {
-  if (!threadId || !messageId) return;
-
-  const upsertPromise = prisma.threadTracker.upsert({
-    where: {
-      emailAccountId_threadId_messageId: {
-        emailAccountId,
-        threadId,
-        messageId,
-      },
-    },
-    update: {},
-    create: {
-      emailAccountId,
-      threadId,
-      messageId,
-      type: ThreadTrackerType.AWAITING,
-      sentAt,
-    },
-  });
-
-  const labelPromise = provider.labelAwaitingReply(messageId);
-
-  const [upsertResult, labelResult] = await Promise.allSettled([
-    upsertPromise,
-    labelPromise,
-  ]);
-
-  if (upsertResult.status === "rejected") {
-    logger.error("Failed to upsert reply tracker", {
-      error: upsertResult.reason,
-    });
-  }
-
-  if (labelResult.status === "rejected") {
-    logger.error("Failed to label reply tracker", {
-      error: labelResult.reason,
-    });
-  }
-}
-
-async function resolveReplyTrackers(
-  provider: EmailProvider,
-  emailAccountId: string,
-  threadId: string,
-) {
-  const updateDbPromise = prisma.threadTracker.updateMany({
+}): Promise<ConversationStatus[]> {
+  const enabledRules = await prisma.rule.findMany({
     where: {
       emailAccountId,
-      threadId,
-      resolved: false,
-      type: ThreadTrackerType.NEEDS_REPLY,
+      systemType: { in: CONVERSATION_STATUS_TYPES },
+      enabled: true,
     },
-    data: {
-      resolved: true,
-    },
+    select: { systemType: true },
   });
-
-  const labelPromise = provider.removeNeedsReplyLabel(threadId);
-
-  await Promise.allSettled([updateDbPromise, labelPromise]);
-}
-
-async function isOutboundTrackingEnabled({
-  email,
-}: {
-  email: string;
-}): Promise<boolean> {
-  const userSettings = await prisma.emailAccount.findUnique({
-    where: { email },
-    select: { outboundReplyTracking: true },
-  });
-  return !!userSettings?.outboundReplyTracking;
+  return enabledRules
+    .map((r) => r.systemType)
+    .filter((s): s is ConversationStatus => s != null);
 }
 
 function isMessageLatestInThread(
   message: ParsedMessage,
   threadMessages: ParsedMessage[],
-  logger: Logger,
 ): { isLatest: boolean; sortedMessages: ParsedMessage[] } {
   if (!threadMessages.length) return { isLatest: false, sortedMessages: [] }; // Should not happen if called correctly
 
-  const sortedMessages = [...threadMessages].sort(
-    (a, b) => (Number(b.internalDate) || 0) - (Number(a.internalDate) || 0),
-  );
-  const actualLatestMessage = sortedMessages[0];
+  const sortedMessages = [...threadMessages].sort(sortByInternalDate());
+  const actualLatestMessage = sortedMessages.at(-1);
 
-  if (actualLatestMessage?.id !== message.id) {
-    logger.warn(
-      "Skipping outbound reply check: message is not the latest in the thread",
-      {
-        processingMessageId: message.id,
-        actualLatestMessageId: actualLatestMessage?.id,
-      },
-    );
-    return { isLatest: false, sortedMessages };
-  }
-  return { isLatest: true, sortedMessages };
-}
-
-function prepareDataForAICheck(
-  message: ParsedMessage,
-  sortedThreadMessages: ParsedMessage[],
-): {
-  messageToSendForLLM: EmailForLLM;
-  threadContextMessagesForLLM: EmailForLLM[];
-} {
-  const messageToSendForLLM = getEmailForLLM(message, {
-    maxLength: 2000, // Give more context for the message we're processing
-    extractReply: true,
-    removeForwarded: false,
-  });
-
-  // Filter out the current message and take the next latest 2 messages for context
-  const threadContextMessagesForLLM = sortedThreadMessages
-    .filter((m) => m.id !== message.id) // Exclude the message just sent
-    .slice(0, 2) // Take the latest 2 messages from the sorted list
-    .map((m) =>
-      getEmailForLLM(m, {
-        maxLength: 500, // Shorter context for previous messages
-        extractReply: true,
-        removeForwarded: false,
-      }),
-    );
-
-  return { messageToSendForLLM, threadContextMessagesForLLM };
+  return {
+    isLatest: actualLatestMessage?.id === message.id,
+    sortedMessages,
+  };
 }

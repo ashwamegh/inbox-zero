@@ -22,6 +22,7 @@ const alertVariants = cva(
   },
 );
 
+/** @deprecated Use ActionCard from "@/components/ui/card" instead */
 const Alert = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement> & VariantProps<typeof alertVariants>
@@ -35,18 +36,20 @@ const Alert = React.forwardRef<
 ));
 Alert.displayName = "Alert";
 
+/** @deprecated Use ActionCard from "@/components/ui/card" instead */
 const AlertTitle = React.forwardRef<
   HTMLParagraphElement,
   React.HTMLAttributes<HTMLHeadingElement>
 >(({ className, ...props }, ref) => (
   <h5
     ref={ref}
-    className={cn("mb-1 font-cal leading-none", className)}
+    className={cn("mb-1 font-title leading-none", className)}
     {...props}
   />
 ));
 AlertTitle.displayName = "AlertTitle";
 
+/** @deprecated Use ActionCard from "@/components/ui/card" instead */
 const AlertDescription = React.forwardRef<
   HTMLParagraphElement,
   React.HTMLAttributes<HTMLParagraphElement>

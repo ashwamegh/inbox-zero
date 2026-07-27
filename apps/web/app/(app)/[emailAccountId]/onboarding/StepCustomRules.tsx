@@ -34,8 +34,12 @@ export function StepCustomRules({
             </ul>
           </div>
 
-          <div className="flex justify-center">
-            <ContinueButton onClick={onNext} />
+          <div className="flex w-full max-w-xs mx-auto">
+            <ContinueButton
+              onClick={onNext}
+              size="default"
+              className="w-full"
+            />
           </div>
         </OnboardingWrapper>
       </div>
@@ -44,7 +48,7 @@ export function StepCustomRules({
         <div className="rounded-2xl p-4 bg-slate-50 border border-slate-200">
           <Image
             src="/images/onboarding/custom-rules.png"
-            alt="Draft replies"
+            alt="Custom rules"
             width={1200}
             height={800}
             className="rounded-xl border border-slate-200"

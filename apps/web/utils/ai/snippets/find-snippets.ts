@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { stringifyEmail } from "@/utils/stringify-email";
 import type { EmailForLLM } from "@/utils/types";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
-import { getModel } from "@/utils/llms/model";
+import { getModelForUseCase, LlmUseCase } from "@/utils/llms/use-cases";
 import { createGenerateObject } from "@/utils/llms";
+import { getEmailListPrompt } from "@/utils/ai/helpers";
 
 export async function aiFindSnippets({
   emailAccount,
@@ -45,16 +45,19 @@ Return the snippets in the following JSON format:
 </example_response>`;
 
   const prompt = `Here are the emails to analyze:
-${sentEmails
-  .map((email) => `<email>${stringifyEmail(email, 2000)}</email>`)
-  .join("\n")}`;
 
-  const modelOptions = getModel(emailAccount.user, "chat");
+${getEmailListPrompt({ messages: sentEmails, messageMaxLength: 2000 })}`;
+
+  const modelOptions = getModelForUseCase(
+    emailAccount.user,
+    LlmUseCase.FindSnippets,
+  );
 
   const generateObject = createGenerateObject({
-    userEmail: emailAccount.email,
+    emailAccount,
     label: "ai-find-snippets",
     modelOptions,
+    promptHardening: { trust: "trusted" },
   });
 
   const aiResponse = await generateObject({

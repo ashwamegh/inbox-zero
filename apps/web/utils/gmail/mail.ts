@@ -3,20 +3,31 @@ import type { gmail_v1 } from "@googleapis/gmail";
 import MailComposer from "nodemailer/lib/mail-composer";
 import type Mail from "nodemailer/lib/mailer";
 import type { Attachment } from "nodemailer/lib/mailer";
-import { zodAttachment } from "@/utils/types/mail";
+import { type WithMailerAttachments, zodAttachment } from "@/utils/types/mail";
 import { convertEmailHtmlToText } from "@/utils/mail";
-import { parseMessage } from "@/utils/gmail/message";
-import { getMessage } from "@/utils/gmail/message";
 import {
   forwardEmailHtml,
   forwardEmailSubject,
   forwardEmailText,
 } from "@/utils/gmail/forward";
 import type { ParsedMessage } from "@/utils/types";
-import { createReplyContent } from "@/utils/gmail/reply";
+import { createReplyContent, formatEmailDate } from "@/utils/gmail/reply";
 import type { EmailForAction } from "@/utils/ai/types";
 import { createScopedLogger } from "@/utils/logger";
 import { withGmailRetry } from "@/utils/gmail/retry";
+import {
+  buildReplyAllRecipients,
+  formatCcList,
+  mergeAndDedupeRecipients,
+} from "@/utils/email/reply-all";
+import { formatReplySubject } from "@/utils/email/subject";
+import { buildThreadingHeaders } from "@/utils/email/threading";
+import { ensureEmailSendingEnabled } from "@/utils/mail";
+import { convertNewlinesToBr } from "@/utils/string";
+import {
+  buildQuotedPlainText,
+  quotePlainTextContent,
+} from "@/utils/email/quoted-plain-text";
 
 const logger = createScopedLogger("gmail/mail");
 
@@ -26,9 +37,11 @@ export const sendEmailBody = z.object({
       threadId: z.string(),
       headerMessageId: z.string(), // this is different to the gmail message id and looks something like <123...abc@mail.example.com>
       references: z.string().optional(), // for threading
+      messageId: z.string().optional(), // platform-specific message ID (Graph ID for Outlook)
     })
     .optional(),
   to: z.string(),
+  from: z.string().optional(),
   cc: z.string().optional(),
   bcc: z.string().optional(),
   replyTo: z.string().optional(),
@@ -37,42 +50,42 @@ export const sendEmailBody = z.object({
   attachments: z.array(zodAttachment).optional(),
 });
 export type SendEmailBody = z.infer<typeof sendEmailBody>;
+type MailSendEmailBody = WithMailerAttachments<SendEmailBody>;
 
-const encodeMessage = (message: Buffer) => {
-  return Buffer.from(message)
+const encodeMessage = (message: Buffer) =>
+  Buffer.from(message)
     .toString("base64")
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
-};
 
-const createMail = async (options: Mail.Options) => {
+export const createMail = async (options: Mail.Options) => {
   const mailComposer = new MailComposer(options);
   const message = await mailComposer.compile().build();
   return encodeMessage(message);
 };
 
-const createRawMailMessage = async (
-  {
-    to,
-    cc,
-    bcc,
-    subject,
-    messageHtml,
-    messageText,
-    attachments,
-    replyToEmail,
-  }: Omit<SendEmailBody, "attachments"> & {
-    attachments?: Attachment[];
-    messageText: string;
-  },
-  from?: string,
-) => {
+const createRawMailMessage = async ({
+  to,
+  from,
+  cc,
+  bcc,
+  replyTo,
+  subject,
+  messageHtml,
+  messageText,
+  attachments,
+  replyToEmail,
+}: Omit<SendEmailBody, "attachments"> & {
+  attachments?: Attachment[];
+  messageText: string;
+}) => {
   return await createMail({
     from,
     to,
     cc,
     bcc,
+    replyTo,
     subject,
     alternatives: [
       {
@@ -86,10 +99,10 @@ const createRawMailMessage = async (
     ],
     attachments,
     // https://datatracker.ietf.org/doc/html/rfc2822#appendix-A.2
-    references: replyToEmail
-      ? `${replyToEmail.references || ""} ${replyToEmail.headerMessageId}`.trim()
-      : "",
-    inReplyTo: replyToEmail ? replyToEmail.headerMessageId : "",
+    ...buildThreadingHeaders({
+      headerMessageId: replyToEmail?.headerMessageId || "",
+      references: replyToEmail?.references,
+    }),
     headers: {
       "X-Mailer": "Inbox Zero Web",
     },
@@ -100,32 +113,35 @@ const createRawMailMessage = async (
 // https://www.labnol.org/google-api-service-account-220405
 export async function sendEmailWithHtml(
   gmail: gmail_v1.Gmail,
-  body: SendEmailBody,
+  body: MailSendEmailBody,
 ) {
+  ensureEmailSendingEnabled();
+
   let messageText: string;
 
   try {
     messageText = convertEmailHtmlToText({ htmlText: body.messageHtml });
   } catch (error) {
     logger.error("Error converting email html to text", { error });
-    // Strip HTML tags as a fallback
-    messageText = body.messageHtml.replace(/<[^>]*>/g, "");
+    messageText = stripHtmlTagsForPlainText(body.messageHtml).trim();
   }
 
   const raw = await createRawMailMessage({ ...body, messageText });
-  const result = await gmail.users.messages.send({
-    userId: "me",
-    requestBody: {
-      threadId: body.replyToEmail ? body.replyToEmail.threadId : undefined,
-      raw,
-    },
-  });
+  const result = await withGmailRetry(() =>
+    gmail.users.messages.send({
+      userId: "me",
+      requestBody: {
+        threadId: body.replyToEmail ? body.replyToEmail.threadId : undefined,
+        raw,
+      },
+    }),
+  );
   return result;
 }
 
 export async function sendEmailWithPlainText(
   gmail: gmail_v1.Gmail,
-  body: Omit<SendEmailBody, "messageHtml"> & { messageText: string },
+  body: Omit<MailSendEmailBody, "messageHtml"> & { messageText: string },
 ) {
   const messageHtml = convertTextToHtmlParagraphs(body.messageText);
   return sendEmailWithHtml(gmail, { ...body, messageHtml });
@@ -139,65 +155,76 @@ export async function replyToEmail(
   >,
   reply: string,
   from?: string,
+  options?: { replyTo?: string; attachments?: Attachment[] },
 ) {
-  const { text, html } = createReplyContent({
+  ensureEmailSendingEnabled();
+
+  const { html } = createReplyContent({
+    textContent: reply,
+    message,
+  });
+  const messageText = buildReplyMessageText({
     textContent: reply,
     message,
   });
 
-  const raw = await createRawMailMessage(
-    {
-      to: message.headers["reply-to"] || message.headers.from,
-      subject: message.headers.subject,
-      messageText: text,
-      messageHtml: html,
-      replyToEmail: {
-        threadId: message.threadId,
-        headerMessageId: message.headers["message-id"] || "",
-        references: message.headers.references,
-      },
-    },
+  // Only replying to the original sender
+  const raw = await createRawMailMessage({
+    to: message.headers["reply-to"] || message.headers.from,
     from,
-  );
-
-  const result = await gmail.users.messages.send({
-    userId: "me",
-    requestBody: {
+    replyTo: options?.replyTo,
+    subject: formatReplySubject(message.headers.subject),
+    messageText,
+    messageHtml: html,
+    attachments: options?.attachments,
+    replyToEmail: {
       threadId: message.threadId,
-      raw,
+      headerMessageId: message.headers["message-id"] || "",
+      references: message.headers.references,
     },
   });
+
+  const result = await withGmailRetry(() =>
+    gmail.users.messages.send({
+      userId: "me",
+      requestBody: {
+        threadId: message.threadId,
+        raw,
+      },
+    }),
+  );
 
   return result;
 }
 
 export async function forwardEmail(
   gmail: gmail_v1.Gmail,
+  message: ParsedMessage,
   options: {
-    messageId: string;
     to: string;
     cc?: string;
     bcc?: string;
     content?: string;
+    from?: string;
   },
 ) {
-  if (!options.to.trim()) throw new Error("Recipient address is required");
+  ensureEmailSendingEnabled();
 
-  // TODO: Use email provider to get the message which will parse it internally
-  const m = await getMessage(options.messageId, gmail);
-
-  const messageId = m.id;
-  if (!messageId) throw new Error("Message not found");
-
-  const message = parseMessage(m);
+  if (!options.to?.trim()) {
+    throw new Error(
+      `Recipient address is required for forwarding email. Received: "${options.to}"`,
+    );
+  }
 
   const attachments = await Promise.all(
     message.attachments?.map(async (attachment) => {
-      const attachmentData = await gmail.users.messages.attachments.get({
-        userId: "me",
-        messageId,
-        id: attachment.attachmentId,
-      });
+      const attachmentData = await withGmailRetry(() =>
+        gmail.users.messages.attachments.get({
+          userId: "me",
+          messageId: message.id,
+          id: attachment.attachmentId,
+        }),
+      );
       return {
         content: Buffer.from(attachmentData.data.data || "", "base64"),
         contentType: attachment.mimeType,
@@ -208,6 +235,7 @@ export async function forwardEmail(
 
   const raw = await createRawMailMessage({
     to: options.to,
+    from: options.from,
     cc: options.cc,
     bcc: options.bcc,
     subject: forwardEmailSubject(message.headers.subject),
@@ -221,13 +249,15 @@ export async function forwardEmail(
     attachments,
   });
 
-  const result = await gmail.users.messages.send({
-    userId: "me",
-    requestBody: {
-      threadId: message.threadId,
-      raw,
-    },
-  });
+  const result = await withGmailRetry(() =>
+    gmail.users.messages.send({
+      userId: "me",
+      requestBody: {
+        threadId: message.threadId,
+        raw,
+      },
+    }),
+  );
 
   return result;
 }
@@ -240,24 +270,40 @@ export async function draftEmail(
     to?: string;
     subject?: string;
     content: string;
+    cc?: string;
+    bcc?: string;
     attachments?: Attachment[];
   },
+  userEmails: string | string[],
 ) {
-  const { text, html } = createReplyContent({
+  const { html } = createReplyContent({
+    textContent: args.content,
+    message: originalEmail,
+  });
+  const messageText = buildReplyMessageText({
     textContent: args.content,
     message: originalEmail,
   });
 
+  const recipients = buildReplyAllRecipients(
+    originalEmail.headers,
+    args.to,
+    userEmails,
+  );
+
+  // Merge CC from reply-all with CC from args
+  const ccList = mergeAndDedupeRecipients(recipients.cc, args.cc);
+
+  // Sanitize BCC
+  const bccList = mergeAndDedupeRecipients([], args.bcc);
+
   const raw = await createRawMailMessage({
-    to:
-      args.to ||
-      originalEmail.headers["reply-to"] ||
-      originalEmail.headers.from,
-    cc: originalEmail.headers.cc,
-    bcc: originalEmail.headers.bcc,
+    to: recipients.to,
+    cc: formatCcList(ccList),
+    bcc: formatCcList(bccList),
     subject: args.subject || originalEmail.headers.subject,
     messageHtml: html,
-    messageText: text,
+    messageText,
     attachments: args.attachments,
     replyToEmail: {
       threadId: originalEmail.threadId,
@@ -276,6 +322,8 @@ async function createDraft(
   threadId: string,
   raw: string,
 ) {
+  logger.info("Calling Gmail API to create draft");
+
   const result = await withGmailRetry(async () =>
     gmail.users.drafts.create({
       userId: "me",
@@ -288,21 +336,114 @@ async function createDraft(
     }),
   );
 
+  logger.info("Gmail API draft.create response received", {
+    draftId: result.data.id,
+    messageId: result.data.message?.id,
+  });
+
   return result;
 }
 
-function convertTextToHtmlParagraphs(text?: string | null): string {
+export function convertTextToHtmlParagraphs(text?: string | null): string {
   if (!text) return "";
 
-  // Split the text into paragraphs based on newline characters
-  const paragraphs = text
-    .split("\n")
-    .filter((paragraph) => paragraph.trim() !== "");
+  const normalizedText = text.replace(/\r\n/g, "\n");
+  const lines = normalizedText.split("\n");
 
-  // Wrap each paragraph with <p> tags and join them back together
-  const htmlContent = paragraphs
-    .map((paragraph) => `<p>${paragraph.trim()}</p>`)
+  const htmlContent = lines
+    .map((line) => {
+      const trimmed = line.trim();
+      return trimmed === "" ? "<br>" : `<p>${trimmed}</p>`;
+    })
     .join("");
 
   return `<html><body>${htmlContent}</body></html>`;
+}
+
+export function buildReplyMessageText({
+  textContent,
+  message,
+}: {
+  textContent?: string;
+  message: Pick<ParsedMessage, "headers" | "textPlain">;
+}) {
+  const quotedDate = formatEmailDate(new Date(message.headers.date));
+  const quotedHeader = `On ${quotedDate}, ${message.headers.from} wrote:`;
+  const quotedContent = quotePlainTextContent(message.textPlain);
+
+  return buildQuotedPlainText({
+    textContent: renderReplyBodyAsPlainText(textContent),
+    quotedHeader,
+    quotedContent,
+  });
+}
+
+function renderReplyBodyAsPlainText(textContent?: string) {
+  if (!textContent) return "";
+
+  return convertEmailHtmlToText({
+    htmlText: convertNewlinesToBr(textContent),
+  })
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+export function stripHtmlTagsForPlainText(html: string) {
+  let plainText = "";
+
+  for (let index = 0; index < html.length; index++) {
+    const char = html[index];
+    if (char !== "<") {
+      plainText += char;
+      continue;
+    }
+
+    if (html.startsWith("<!--", index)) {
+      const commentEnd = html.indexOf("-->", index + 4);
+      if (commentEnd === -1) break;
+      index = commentEnd + 2;
+      continue;
+    }
+
+    const isClosingTag = html[index + 1] === "/";
+    const tagStart = index + (isClosingTag ? 2 : 1);
+    const tagName = readHtmlTagName(html, tagStart);
+    if (!tagName) {
+      plainText += char;
+      continue;
+    }
+
+    const tagEnd = html.indexOf(">", tagStart + tagName.length);
+    if (tagEnd === -1) {
+      plainText += char;
+      continue;
+    }
+
+    if (tagName === "br" || (isClosingTag && tagName === "p")) {
+      plainText += "\n";
+    }
+
+    index = tagEnd;
+  }
+
+  return plainText;
+}
+
+function readHtmlTagName(value: string, start: number) {
+  let tagName = "";
+
+  for (let index = start; index < value.length; index++) {
+    const char = value[index]?.toLowerCase();
+    if (!char) break;
+
+    const isTagNameChar =
+      (char >= "a" && char <= "z") ||
+      (tagName.length > 0 && char >= "0" && char <= "9");
+    if (!isTagNameChar) break;
+
+    tagName += char;
+  }
+
+  return tagName;
 }

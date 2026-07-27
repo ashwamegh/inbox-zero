@@ -1,54 +1,72 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
-import { Label, Radio, RadioGroup } from "@headlessui/react";
 import { CheckIcon, SparklesIcon } from "lucide-react";
-import { capitalCase } from "capital-case";
 import Link from "next/link";
+import { usePostHog } from "posthog-js/react";
 import { env } from "@/env";
 import { LoadingContent } from "@/components/LoadingContent";
-import { usePremium } from "@/components/PremiumAlert";
+import { usePremium } from "@/hooks/usePremium";
 import { Button } from "@/components/ui/button";
-import { getUserTier } from "@/utils/premium";
 import {
-  pricingAdditonalEmail,
+  PricingFrequencyToggle,
+  frequencies,
+  DiscountBadge,
+  type Frequency,
+} from "@/app/(app)/premium/PricingFrequencyToggle";
+import { getUserTier, hasActiveAppleSubscription } from "@/utils/premium";
+import {
+  getPremiumTierName,
+  shouldShowLegacyStripePricingNotice,
   type Tier,
   tiers,
 } from "@/app/(app)/premium/config";
-import { AlertWithButton } from "@/components/Alert";
+import { AlertBasic } from "@/components/Alert";
 import { TooltipExplanation } from "@/components/TooltipExplanation";
 import { toastError } from "@/components/Toast";
 import {
   generateCheckoutSessionAction,
   getBillingPortalUrlAction,
 } from "@/utils/actions/premium";
-import type { PremiumTier } from "@prisma/client";
+import type { PremiumTier } from "@/generated/prisma/enums";
 import { LoadingMiniSpinner } from "@/components/Loading";
 import { cn } from "@/utils";
 import { ManageSubscription } from "@/app/(app)/premium/ManageSubscription";
-
-const frequencies = [
-  { value: "monthly" as const, label: "Monthly", priceSuffix: "/month" },
-  { value: "annually" as const, label: "Annually", priceSuffix: "/month" },
-];
+import { captureException } from "@/utils/error";
+import { redirectToSafeUrl } from "@/utils/redirect";
 
 export type PricingProps = {
   header?: React.ReactNode;
   showSkipUpgrade?: boolean;
   className?: string;
+  displayTiers?: Tier[];
 };
 
 export default function Pricing(props: PricingProps) {
-  const { premium, isLoading, error, data } = usePremium();
+  const posthog = usePostHog();
+  const { premium, isPremium, isLoading, error, data } = usePremium();
+  const hasTrackedPricingView = useRef(false);
 
   const isLoggedIn = !!data?.id;
+  const pricingSource = props.showSkipUpgrade
+    ? "welcome_upgrade"
+    : "app_premium";
+  const displayedTiers = props.displayTiers || tiers;
+  const hasActiveAppleManagedSubscription = hasActiveAppleSubscription(
+    premium?.appleExpiresAt || null,
+    premium?.appleRevokedAt || null,
+    premium?.appleSubscriptionStatus || null,
+  );
+  const hasExistingSubscription = Boolean(
+    isPremium ||
+      premium?.stripeSubscriptionId ||
+      premium?.lemonSqueezyCustomerId ||
+      hasActiveAppleManagedSubscription,
+  );
+  const isLegacyStripePlan = shouldShowLegacyStripePricingNotice(premium);
 
-  // const defaultFrequency = usePricingFrequencyDefault();
-  // const [frequency, setFrequency] = useState(
-  //   defaultFrequency === "monthly" ? frequencies[0] : frequencies[1],
-  // );
   const [frequency, setFrequency] = useState(frequencies[1]);
 
   const userPremiumTier = getUserTier(premium);
@@ -56,8 +74,10 @@ export default function Pricing(props: PricingProps) {
   const header = props.header || (
     <div className="mb-12">
       <div className="mx-auto max-w-2xl text-center lg:max-w-4xl">
-        <h2 className="font-cal text-base leading-7 text-blue-600">Pricing</h2>
-        <p className="mt-2 font-cal text-4xl text-gray-900 sm:text-5xl">
+        <h2 className="font-title text-base leading-7 text-blue-600">
+          Pricing
+        </h2>
+        <p className="mt-2 font-title text-4xl text-gray-900 sm:text-5xl">
           Try for free, affordable paid plans
         </p>
       </div>
@@ -67,27 +87,28 @@ export default function Pricing(props: PricingProps) {
     </div>
   );
 
-  // const pricingVariant = usePricingVariant();
-  // const { Layout, Item, tiers } = getLayoutComponents(
-  //   pricingVariant,
-  //   premiumTier,
-  // );
-
-  // const pricingVariant = usePricingVariant();
-  // const { Layout, Item, tiers } = getLayoutComponents(
-  //   pricingVariant,
-  //   premiumTier,
-  // );
-
-  // const { Layout, Item, tiers } = {
-  //   Layout: ThreeColLayout,
-  //   Item: ThreeColItem,
-  //   tiers: [basicTier, businessTier, enterpriseTier],
-  // };
-
-  const Layout = ThreeColLayout;
-
   const router = useRouter();
+
+  useEffect(() => {
+    if (isLoading || hasTrackedPricingView.current) return;
+
+    hasTrackedPricingView.current = true;
+    posthog.capture("pricing_page_viewed", {
+      source: pricingSource,
+      isLoggedIn,
+      hasExistingSubscription,
+      showSkipUpgrade: Boolean(props.showSkipUpgrade),
+      displayedTiers: displayedTiers.map((tier) => tier.name),
+    });
+  }, [
+    displayedTiers,
+    hasExistingSubscription,
+    isLoading,
+    isLoggedIn,
+    posthog,
+    pricingSource,
+    props.showSkipUpgrade,
+  ]);
 
   return (
     <LoadingContent loading={isLoading} error={error}>
@@ -100,91 +121,76 @@ export default function Pricing(props: PricingProps) {
       >
         {header}
 
-        {!!(
-          premium?.stripeSubscriptionId || premium?.lemonSqueezyCustomerId
-        ) && (
+        {hasExistingSubscription && (
           <div className="mb-8 mt-8 text-center">
-            <ManageSubscription premium={premium} />
+            <ManageSubscription premium={premium ?? null} />
 
             {userPremiumTier && (
-              <>
-                <Button className="ml-2" asChild>
-                  <Link href={env.NEXT_PUBLIC_APP_HOME_PATH}>
-                    <SparklesIcon className="mr-2 h-4 w-4" />
-                    Go to app
-                  </Link>
-                </Button>
-                <div className="mx-auto mt-4 max-w-md">
-                  <AlertWithButton
-                    className="bg-background"
-                    variant="blue"
-                    title="Add extra users to your account!"
-                    description={`You can upgrade extra accounts to ${capitalCase(
-                      userPremiumTier,
-                    )} for $${
-                      pricingAdditonalEmail[userPremiumTier]
-                    } per email address!`}
-                    icon={null}
-                    button={
-                      <div className="ml-4 whitespace-nowrap">
-                        <Button asChild>
-                          {/* <Link href="/settings#manage-users">Add users</Link> */}
-                          <Link href="/accounts">Add users</Link>
-                        </Button>
-                      </div>
-                    }
-                  />
-                </div>
-              </>
+              <Button className="ml-2" asChild>
+                <Link href="/setup">
+                  <SparklesIcon className="mr-2 h-4 w-4" />
+                  Go to app
+                </Link>
+              </Button>
+            )}
+
+            {hasActiveAppleManagedSubscription && (
+              <div className="mx-auto mt-4 max-w-2xl text-left">
+                <AlertBasic
+                  variant="blue"
+                  title="Managed in the App Store"
+                  description="This subscription is billed by Apple. To change or cancel it, use your iPhone or iPad subscription settings."
+                />
+              </div>
+            )}
+
+            {isLegacyStripePlan && (
+              <div className="mx-auto mt-4 max-w-2xl text-left">
+                <AlertBasic
+                  variant="blue"
+                  title="Grandfathered pricing"
+                  description={`You're on a legacy ${getPremiumTierName(premium?.tier)} Stripe plan. The prices below are the current rates for new subscriptions and may be higher than your actual billing.`}
+                />
+              </div>
             )}
           </div>
         )}
 
-        <div className="flex items-center justify-center">
-          <RadioGroup
-            value={frequency}
-            onChange={setFrequency}
-            className="grid grid-cols-2 gap-x-1 rounded-full p-1 text-center text-xs font-semibold leading-5 ring-1 ring-inset ring-gray-200"
-          >
-            <Label className="sr-only">Payment frequency</Label>
-            {frequencies.map((option) => (
-              <Radio
-                key={option.value}
-                value={option}
-                className={({ checked }) =>
-                  cn(
-                    checked ? "bg-black text-white" : "text-gray-500",
-                    "cursor-pointer rounded-full px-2.5 py-1",
-                  )
-                }
-              >
-                <span>{option.label}</span>
-              </Radio>
-            ))}
-          </RadioGroup>
-
+        <PricingFrequencyToggle
+          frequency={frequency}
+          setFrequency={setFrequency}
+        >
           <div className="ml-1">
-            <Badge>Save up to 16%</Badge>
+            <DiscountBadge>Save up to 20%</DiscountBadge>
           </div>
-        </div>
+        </PricingFrequencyToggle>
 
-        <Layout className="isolate mx-auto mt-10 grid max-w-7xl grid-cols-1 gap-y-8">
-          {tiers.map((tier, index) => {
-            return (
-              <PriceTier
-                key={tier.name}
-                tier={tier}
-                index={index}
-                userPremiumTier={userPremiumTier}
-                frequency={frequency}
-                stripeSubscriptionId={premium?.stripeSubscriptionId}
-                stripeSubscriptionStatus={premium?.stripeSubscriptionStatus}
-                isLoggedIn={isLoggedIn}
-                router={router}
-              />
-            );
-          })}
-        </Layout>
+        <div
+          className={cn(
+            "isolate mx-auto mt-10 grid grid-cols-1 gap-y-8 gap-4",
+            displayedTiers.length === 2
+              ? "max-w-3xl lg:grid-cols-2"
+              : "max-w-7xl lg:mx-0 lg:max-w-none lg:grid-cols-3",
+          )}
+        >
+          {displayedTiers.map((tier) => (
+            <PriceTier
+              key={tier.name}
+              tier={tier}
+              userPremiumTier={userPremiumTier}
+              frequency={frequency}
+              stripeSubscriptionId={premium?.stripeSubscriptionId}
+              stripeSubscriptionStatus={premium?.stripeSubscriptionStatus}
+              hasActiveAppleManagedSubscription={
+                hasActiveAppleManagedSubscription
+              }
+              isLoggedIn={isLoggedIn}
+              router={router}
+              userId={data?.id}
+              pricingSource={pricingSource}
+            />
+          ))}
+        </div>
       </div>
     </LoadingContent>
   );
@@ -192,26 +198,35 @@ export default function Pricing(props: PricingProps) {
 
 function PriceTier({
   tier,
-  index,
   userPremiumTier,
   frequency,
   stripeSubscriptionId,
   stripeSubscriptionStatus,
+  hasActiveAppleManagedSubscription,
   isLoggedIn,
   router,
+  userId,
+  pricingSource,
 }: {
   tier: Tier;
-  index: number;
   userPremiumTier: PremiumTier | null;
-  frequency: (typeof frequencies)[number];
+  frequency: Frequency;
   stripeSubscriptionId: string | null | undefined;
   stripeSubscriptionStatus: string | null | undefined;
+  hasActiveAppleManagedSubscription: boolean;
   isLoggedIn: boolean;
   router: ReturnType<typeof useRouter>;
+  userId: string | null | undefined;
+  pricingSource: "welcome_upgrade" | "app_premium";
 }) {
+  const posthog = usePostHog();
   const [loading, setLoading] = useState(false);
 
   const isCurrentPlan = tier.tiers[frequency.value] === userPremiumTier;
+  const hasActiveStripeSubscription =
+    !!stripeSubscriptionId &&
+    !!stripeSubscriptionStatus &&
+    ["active", "trialing"].includes(stripeSubscriptionStatus);
 
   function getCTAText() {
     if (isCurrentPlan) return "Current plan";
@@ -222,7 +237,6 @@ function PriceTier({
   return (
     <ThreeColItem
       key={tier.name}
-      index={index}
       className="flex flex-col rounded-3xl bg-white p-8 ring-1 ring-gray-200 xl:p-10"
     >
       <div className="flex-1">
@@ -231,12 +245,12 @@ function PriceTier({
             id={tier.name}
             className={cn(
               tier.mostPopular ? "text-blue-600" : "text-gray-900",
-              "font-cal text-lg leading-8",
+              "font-title text-lg leading-8",
             )}
           >
             {tier.name}
           </h3>
-          {tier.mostPopular ? <Badge>Popular</Badge> : null}
+          {tier.mostPopular ? <DiscountBadge>Popular</DiscountBadge> : null}
         </div>
         <p className="mt-4 text-sm leading-6 text-gray-600">
           {tier.description}
@@ -252,27 +266,24 @@ function PriceTier({
                 ${tier.price[frequency.value]}
               </span>
               <span className="text-sm font-semibold leading-6 text-gray-600">
-                {frequency.priceSuffix}
+                /user
               </span>
             </>
           )}
 
           {!!tier.discount?.[frequency.value] && (
-            <Badge>
+            <DiscountBadge>
               <span className="tracking-wide">
                 SAVE {tier.discount[frequency.value].toFixed(0)}%
               </span>
-            </Badge>
+            </DiscountBadge>
           )}
         </p>
-        {tier.priceAdditional && tier.priceAdditional[frequency.value] > 0 ? (
-          <p className="mt-3 text-sm leading-6 text-gray-500">
-            +${formatPrice(tier.priceAdditional[frequency.value])} for each
-            additional email account
-          </p>
-        ) : (
-          <div />
-        )}
+
+        <p className="mt-2 text-sm leading-6 text-gray-600">
+          {tier.price[frequency.value] ? frequency.priceSuffix : "\u00A0"}
+        </p>
+
         <ul className="mt-8 space-y-3 text-sm leading-6 text-gray-600">
           {tier.features.map((feature) => (
             <li key={feature.text} className="flex gap-x-3">
@@ -295,13 +306,30 @@ function PriceTier({
         type="button"
         disabled={loading}
         onClick={async () => {
+          const upgradeToTier = tier.tiers[frequency.value];
+
+          posthog.capture("pricing_cta_clicked", {
+            source: pricingSource,
+            tier: tier.name,
+            billingTier: upgradeToTier ?? null,
+            frequency: frequency.value,
+            cta: getCTAText(),
+            isCurrentPlan,
+            isLoggedIn,
+            hasExternalCta: Boolean(tier.ctaLink),
+            hasActiveStripeSubscription,
+          });
+
           // Handle enterprise tier differently - redirect to sales page
           if (tier.ctaLink) {
-            window.location.href = tier.ctaLink;
+            redirectToSafeUrl(tier.ctaLink, { allowExternal: true });
             return;
           }
 
-          if (!isLoggedIn) router.push("/login");
+          if (!isLoggedIn) {
+            router.push("/login");
+            return;
+          }
 
           setLoading(true);
 
@@ -311,38 +339,62 @@ function PriceTier({
               return;
             }
 
-            const upgradeToTier = tier.tiers[frequency.value];
+            if (hasActiveAppleManagedSubscription) {
+              toast.info(
+                "This subscription is managed through the App Store. To change or cancel it, use your iPhone or iPad subscription settings.",
+              );
+              return;
+            }
 
-            // Only use billing portal if subscription is active or trialing
-            const hasActiveStripeSubscription =
-              stripeSubscriptionId &&
-              stripeSubscriptionStatus &&
-              ["active", "trialing"].includes(stripeSubscriptionStatus);
+            let result:
+              | Awaited<ReturnType<typeof getBillingPortalUrlAction>>
+              | Awaited<ReturnType<typeof generateCheckoutSessionAction>>;
 
-            const result = hasActiveStripeSubscription
-              ? await getBillingPortalUrlAction({
-                  tier: upgradeToTier,
-                })
-              : await generateCheckoutSessionAction({
+            if (hasActiveStripeSubscription) {
+              result = await getBillingPortalUrlAction({ tier: upgradeToTier });
+
+              if (!result?.data?.url) {
+                result = await generateCheckoutSessionAction({
                   tier: upgradeToTier,
                 });
+              }
+            } else {
+              result = await generateCheckoutSessionAction({
+                tier: upgradeToTier,
+              });
+            }
 
             if (!result?.data?.url || result?.serverError) {
+              captureException(new Error("Error creating checkout session"), {
+                extra: {
+                  tier: upgradeToTier,
+                  frequency: frequency.value,
+                  userId,
+                  serverError: result?.serverError,
+                  result,
+                },
+              });
               toastError({
                 description:
                   result?.serverError ||
-                  "Error creating checkout session. Please contact support.",
+                  `Error creating checkout session. Please contact support at ${env.NEXT_PUBLIC_SUPPORT_EMAIL}`,
               });
               return;
             }
 
-            window.location.href = result.data.url;
+            redirectToSafeUrl(result.data.url, { allowExternal: true });
           }
 
           try {
             await load();
           } catch (error) {
             console.error(error);
+            toastError({
+              description:
+                error instanceof Error
+                  ? error.message
+                  : `Error creating checkout session. Please contact support at ${env.NEXT_PUBLIC_SUPPORT_EMAIL}`,
+            });
           } finally {
             setLoading(false);
           }
@@ -367,110 +419,12 @@ function PriceTier({
   );
 }
 
-// function attachUserInfo(
-//   url: string,
-//   user: { id: string; email: string; name?: string | null },
-//   quantity?: number,
-// ) {
-//   if (!user) return url;
-
-//   let res = `${url}?checkout[custom][user_id]=${user.id}&checkout[email]=${user.email}&checkout[name]=${user.name}`;
-//   if (quantity) res += `&quantity=${quantity}`;
-//   return res;
-// }
-
-// function useAffiliateCode() {
-//   const searchParams = useSearchParams();
-//   const affiliateCode = searchParams.get("aff");
-//   return affiliateCode;
-// }
-
-// function buildLemonUrl(url: string, affiliateCode: string | null) {
-//   if (!affiliateCode) return url;
-//   const newUrl = `${url}?aff_ref=${affiliateCode}`;
-//   return newUrl;
-// }
-
-// function getLayoutComponents(
-//   pricingVariant: string,
-//   premiumTier: PremiumTier | null,
-// ) {
-//   const isBasicTier =
-//     premiumTier === PremiumTier.BASIC_MONTHLY ||
-//     premiumTier === PremiumTier.BASIC_ANNUALLY;
-
-//   if (pricingVariant === "basic-business" || isBasicTier) {
-//     return {
-//       Layout: TwoColLayout,
-//       Item: TwoColItem,
-//       tiers: [basicTier, businessTier],
-//     };
-//   }
-
-//   if (pricingVariant === "business-basic" || isBasicTier) {
-//     return {
-//       Layout: TwoColLayout,
-//       Item: TwoColItem,
-//       tiers: [businessTier, basicTier],
-//     };
-//   }
-
-//   // control
-//   return {
-//     Layout: ThreeColLayout,
-//     Item: ThreeColItem,
-//     tiers: [basicTier, businessTier, enterpriseTier],
-//   };
-// }
-
-function ThreeColLayout({
-  children,
-  className,
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <div className={cn("lg:mx-0 lg:max-w-none lg:grid-cols-3", className)}>
-      {children}
-    </div>
-  );
-}
-
 function ThreeColItem({
   children,
   className,
-  index,
 }: {
   children: React.ReactNode;
   className?: string;
-  index: number;
 }) {
-  return (
-    <div
-      className={cn(
-        index === 1 ? "lg:z-10 lg:rounded-b-none" : "lg:mt-8", // middle tier
-        index === 0 ? "lg:rounded-r-none" : "",
-        index === 2 ? "lg:rounded-l-none" : "",
-        className,
-      )}
-    >
-      {children}
-    </div>
-  );
-}
-
-function Badge({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="rounded-full bg-blue-600/10 px-2.5 py-1 text-xs font-semibold leading-5 text-blue-600">
-      {children}
-    </span>
-  );
-}
-
-// $3 => $3
-// $3.5 => $3.50
-function formatPrice(price: number) {
-  if (price - Math.floor(price) > 0) return price.toFixed(2);
-  return price;
+  return <div className={cn(className)}>{children}</div>;
 }

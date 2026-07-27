@@ -14,21 +14,23 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { DateCell } from "@/app/(app)/[emailAccountId]/assistant/ExecutedRulesTable";
+import { DateCell } from "@/app/(app)/[emailAccountId]/assistant/DateCell";
 import { TablePagination } from "@/components/TablePagination";
 import { AlertBasic } from "@/components/Alert";
 import { Button } from "@/components/ui/button";
 import { useSearchParams } from "next/navigation";
 import { markNotColdEmailAction } from "@/utils/actions/cold-email";
+import { toggleRuleAction } from "@/utils/actions/rule";
 import { Checkbox } from "@/components/Checkbox";
 import { useToggleSelect } from "@/hooks/useToggleSelect";
-import { useEmailAccountFull } from "@/hooks/useEmailAccountFull";
 import { ViewEmailButton } from "@/components/ViewEmailButton";
 import { EmailMessageCellWithData } from "@/components/EmailMessageCell";
 import { EnableFeatureCard } from "@/components/EnableFeatureCard";
 import { toastError, toastSuccess } from "@/components/Toast";
 import { useAccount } from "@/providers/EmailAccountProvider";
-import { prefixPath } from "@/utils/path";
+import { useRules } from "@/hooks/useRules";
+import { isColdEmailBlockerEnabled } from "@/utils/cold-email/cold-email-blocker-enabled";
+import { SystemType } from "@/generated/prisma/enums";
 
 export function ColdEmailList() {
   const searchParams = useSearchParams();
@@ -86,6 +88,11 @@ export function ColdEmailList() {
               <TableRow>
                 <TableHead className="text-center">
                   <Checkbox
+                    label={
+                      isAllSelected
+                        ? "Deselect all cold emails"
+                        : "Select all cold emails"
+                    }
                     checked={isAllSelected}
                     onChange={onToggleSelectAll}
                   />
@@ -137,13 +144,14 @@ function Row({
   mutate: () => void;
   selected: Map<string, boolean>;
   onToggleSelect: (id: string) => void;
-  markNotColdEmail: (input: { sender: string }) => Promise<any>;
+  markNotColdEmail: (input: { sender: string }) => Promise<unknown>;
   isExecuting: boolean;
 }) {
   return (
     <TableRow key={row.id}>
       <TableCell className="text-center">
         <Checkbox
+          label={`Select ${row.fromEmail}`}
           checked={selected.get(row.id) || false}
           onChange={() => onToggleSelect(row.id)}
         />
@@ -185,19 +193,37 @@ function Row({
 }
 
 function NoColdEmails() {
-  const { data } = useEmailAccountFull();
   const { emailAccountId } = useAccount();
+  const { data: rules, mutate: mutateRules } = useRules();
 
-  if (!data?.coldEmailBlocker || data?.coldEmailBlocker === "DISABLED") {
+  const { executeAsync: enableColdEmailBlocker } = useAction(
+    toggleRuleAction.bind(null, emailAccountId),
+    {
+      onSuccess: () => {
+        toastSuccess({ description: "Cold email blocker enabled!" });
+        mutateRules();
+      },
+      onError: () => {
+        toastError({ description: "Error enabling cold email blocker" });
+      },
+    },
+  );
+
+  if (!isColdEmailBlockerEnabled(rules || [])) {
     return (
       <div className="mb-10">
         <EnableFeatureCard
           title="Cold Email Blocker"
-          description="Block unwanted cold emails automatically. Our AI identifies and filters out unsolicited sales emails before they reach your inbox."
+          description="Our AI identifies cold outreach from senders you've never communicated with before. You can customize the prompt after enabling."
           imageSrc="/images/illustrations/calling-help.svg"
           imageAlt="Cold email blocker"
-          buttonText="Set Up"
-          href={prefixPath(emailAccountId, "/cold-email-blocker?tab=settings")}
+          buttonText="Enable"
+          onEnable={async () => {
+            await enableColdEmailBlocker({
+              systemType: SystemType.COLD_EMAIL,
+              enabled: true,
+            });
+          }}
           hideBorder
         />
       </div>

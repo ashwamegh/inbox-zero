@@ -3,48 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import prisma from "@/utils/prisma";
-import { createScopedLogger } from "@/utils/logger";
-import { processPreviousSentEmails } from "@/utils/reply-tracker/check-previous-emails";
 import {
   startAnalyzingReplyTracker,
   stopAnalyzingReplyTracker,
 } from "@/utils/redis/reply-tracker-analyzing";
-import { enableReplyTracker } from "@/utils/reply-tracker/enable";
 import { actionClient } from "@/utils/actions/safe-action";
-import { SafeError } from "@/utils/error";
 import { prefixPath } from "@/utils/path";
-import { isGoogleProvider } from "@/utils/email/provider-types";
-import { getEmailAccountWithAi } from "@/utils/user/get";
-
-const logger = createScopedLogger("enableReplyTracker");
-
-export const enableReplyTrackerAction = actionClient
-  .metadata({ name: "enableReplyTracker" })
-  .action(async ({ ctx: { emailAccountId, provider } }) => {
-    await enableReplyTracker({ emailAccountId, provider });
-
-    revalidatePath(prefixPath(emailAccountId, "/reply-zero"));
-
-    return { success: true };
-  });
-
-export const processPreviousSentEmailsAction = actionClient
-  .metadata({ name: "processPreviousSentEmails" })
-  .action(async ({ ctx: { emailAccountId, provider } }) => {
-    // Not enabled for non-google providers yet
-    if (!isGoogleProvider(provider)) return;
-
-    const emailAccountWithAi = await getEmailAccountWithAi({ emailAccountId });
-
-    if (!emailAccountWithAi) {
-      logger.error("Email account not found", { emailAccountId });
-      throw new SafeError("Email account not found");
-    }
-
-    await processPreviousSentEmails({
-      emailAccount: emailAccountWithAi,
-    });
-  });
 
 const resolveThreadTrackerSchema = z.object({
   threadId: z.string(),
@@ -53,10 +17,10 @@ const resolveThreadTrackerSchema = z.object({
 
 export const resolveThreadTrackerAction = actionClient
   .metadata({ name: "resolveThreadTracker" })
-  .schema(resolveThreadTrackerSchema)
+  .inputSchema(resolveThreadTrackerSchema)
   .action(
     async ({
-      ctx: { emailAccountId },
+      ctx: { emailAccountId, logger },
       parsedInput: { threadId, resolved },
     }) => {
       await startAnalyzingReplyTracker({ emailAccountId }).catch((error) => {

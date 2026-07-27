@@ -2,10 +2,7 @@ import { z } from "zod";
 import { createGenerateObject } from "@/utils/llms";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
 import type { EmailSummary } from "@/utils/ai/report/summarize-emails";
-import { createScopedLogger } from "@/utils/logger";
-import { getModel } from "@/utils/llms/model";
-
-const logger = createScopedLogger("email-report-user-persona");
+import { getModelForUseCase, LlmUseCase } from "@/utils/llms/use-cases";
 
 const userPersonaSchema = z.object({
   professionalIdentity: z.object({
@@ -67,14 +64,16 @@ Analyze the data and identify:
 1. **Professional Identity**: What is their role and what evidence supports this?
 2. **Current Priorities**: What are they focused on professionally based on email content?`;
 
-  logger.trace("Input", { system, prompt });
-
-  const modelOptions = getModel(emailAccount.user);
+  const modelOptions = getModelForUseCase(
+    emailAccount.user,
+    LlmUseCase.EmailReportUserPersona,
+  );
 
   const generateObject = createGenerateObject({
-    userEmail: emailAccount.email,
+    emailAccount,
     label: "email-report-user-persona",
     modelOptions,
+    promptHardening: { trust: "untrusted", level: "none" },
   });
 
   const result = await generateObject({
@@ -83,8 +82,6 @@ Analyze the data and identify:
     prompt,
     schema: userPersonaSchema,
   });
-
-  logger.trace("Output", result.object);
 
   return result.object;
 }

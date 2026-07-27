@@ -1,16 +1,20 @@
 import {
   ExecutedRuleStatus,
   ScheduledActionStatus,
-  type ScheduledAction,
-} from "@prisma/client";
+} from "@/generated/prisma/enums";
+import type { ScheduledAction } from "@/generated/prisma/client";
 import prisma from "@/utils/prisma";
-import { createScopedLogger } from "@/utils/logger";
+import type { Logger } from "@/utils/logger";
 import { getEmailAccountWithAiAndTokens } from "@/utils/user/get";
 import { runActionFunction } from "@/utils/ai/actions";
-import type { ActionItem, EmailForAction } from "@/utils/ai/types";
+import type {
+  ActionExecutionEmailAccount,
+  ActionItem,
+  EmailForAction,
+} from "@/utils/ai/types";
 import type { EmailProvider } from "@/utils/email/types";
 
-const logger = createScopedLogger("scheduled-actions-executor");
+const MODULE = "scheduled-actions-executor";
 
 /**
  * Execute a scheduled action
@@ -18,13 +22,16 @@ const logger = createScopedLogger("scheduled-actions-executor");
 export async function executeScheduledAction(
   scheduledAction: ScheduledAction,
   client: EmailProvider,
+  logger: Logger,
 ) {
-  logger.info("Executing scheduled action", {
+  const log = logger.with({
+    module: MODULE,
     scheduledActionId: scheduledAction.id,
     actionType: scheduledAction.actionType,
     messageId: scheduledAction.messageId,
-    emailAccountId: scheduledAction.emailAccountId,
   });
+
+  log.info("Executing scheduled action");
 
   try {
     const emailAccount = await getEmailAccountWithAiAndTokens({
@@ -34,13 +41,15 @@ export async function executeScheduledAction(
       throw new Error("Email account not found");
     }
 
-    const emailMessage = await validateEmailState(client, scheduledAction);
+    const emailMessage = await validateEmailState(client, scheduledAction, log);
     if (!emailMessage) {
       await markActionCompleted(
         scheduledAction.id,
         null,
+        log,
         "Email no longer exists",
       );
+      await checkAndCompleteExecutedRule(scheduledAction.executedRuleId, log);
       return { success: true, reason: "Email no longer exists" };
     }
 
@@ -54,6 +63,8 @@ export async function executeScheduledAction(
       cc: scheduledAction.cc,
       bcc: scheduledAction.bcc,
       url: scheduledAction.url,
+      staticAttachments: scheduledAction.staticAttachments,
+      selectedAttachments: scheduledAction.selectedAttachments,
     };
 
     const executedAction = await executeDelayedAction({
@@ -66,24 +77,26 @@ export async function executeScheduledAction(
         id: emailAccount.id,
       },
       scheduledAction,
+      log,
     });
 
-    await markActionCompleted(scheduledAction.id, executedAction?.id);
-    await checkAndCompleteExecutedRule(scheduledAction.executedRuleId);
+    await markActionCompleted(scheduledAction.id, executedAction?.id, log);
+    await checkAndCompleteExecutedRule(scheduledAction.executedRuleId, log);
 
-    logger.info("Successfully executed scheduled action", {
+    log.info("Successfully executed scheduled action", {
       scheduledActionId: scheduledAction.id,
       executedActionId: executedAction?.id,
     });
 
     return { success: true, executedActionId: executedAction?.id };
   } catch (error: unknown) {
-    logger.error("Failed to execute scheduled action", {
+    log.error("Failed to execute scheduled action", {
       scheduledActionId: scheduledAction.id,
       error,
     });
 
-    await markActionFailed(scheduledAction.id, error);
+    await markActionFailed(scheduledAction.id, error, log);
+    await checkAndCompleteExecutedRule(scheduledAction.executedRuleId, log);
     return { success: false, error };
   }
 }
@@ -94,12 +107,13 @@ export async function executeScheduledAction(
 async function validateEmailState(
   client: EmailProvider,
   scheduledAction: ScheduledAction,
+  log: Logger,
 ): Promise<EmailForAction | null> {
   try {
     const message = await client.getMessage(scheduledAction.messageId);
 
     if (!message) {
-      logger.info("Email no longer exists", {
+      log.info("Email no longer exists", {
         messageId: scheduledAction.messageId,
         scheduledActionId: scheduledAction.id,
       });
@@ -123,7 +137,7 @@ async function validateEmailState(
       error instanceof Error &&
       error.message === "Requested entity was not found."
     ) {
-      logger.info("Email not found during validation", {
+      log.info("Email not found during validation", {
         messageId: scheduledAction.messageId,
         scheduledActionId: scheduledAction.id,
       });
@@ -143,12 +157,14 @@ async function executeDelayedAction({
   emailMessage,
   emailAccount,
   scheduledAction,
+  log,
 }: {
   client: EmailProvider;
   actionItem: ActionItem;
   emailMessage: EmailForAction;
-  emailAccount: { email: string; userId: string; id: string };
+  emailAccount: ActionExecutionEmailAccount;
   scheduledAction: ScheduledAction;
+  log: Logger;
 }) {
   const executedAction = await prisma.executedAction.create({
     data: {
@@ -160,15 +176,17 @@ async function executeDelayedAction({
       cc: actionItem.cc,
       bcc: actionItem.bcc,
       url: actionItem.url,
-      executedRule: {
-        connect: { id: scheduledAction.executedRuleId },
-      },
+      staticAttachments: actionItem.staticAttachments ?? undefined,
+      selectedAttachments: actionItem.selectedAttachments ?? undefined,
+      executedRuleId: scheduledAction.executedRuleId,
     },
   });
 
   const executedRule = await prisma.executedRule.findUnique({
     where: { id: scheduledAction.executedRuleId },
-    include: { actionItems: true },
+    include: {
+      actionItems: true,
+    },
   });
 
   if (!executedRule) {
@@ -186,7 +204,7 @@ async function executeDelayedAction({
     internalDate: emailMessage.internalDate,
   };
 
-  logger.info("Executing delayed action", {
+  log.info("Executing delayed action", {
     actionType: executedAction.type,
     executedActionId: executedAction.id,
     messageId: email.id,
@@ -196,13 +214,12 @@ async function executeDelayedAction({
     client,
     email,
     action: executedAction,
-    userEmail: emailAccount.email,
-    userId: emailAccount.userId,
-    emailAccountId: emailAccount.id,
+    emailAccount,
     executedRule,
+    logger: log,
   });
 
-  logger.info("Successfully executed delayed action", {
+  log.info("Successfully executed delayed action", {
     actionType: executedAction.type,
     executedActionId: executedAction.id,
   });
@@ -216,6 +233,7 @@ async function executeDelayedAction({
 async function markActionCompleted(
   scheduledActionId: string,
   executedActionId: string | null | undefined,
+  log: Logger,
   reason?: string,
 ) {
   await prisma.scheduledAction.update({
@@ -227,7 +245,7 @@ async function markActionCompleted(
     },
   });
 
-  logger.info("Marked scheduled action as completed", {
+  log.info("Marked scheduled action as completed", {
     scheduledActionId,
     executedActionId,
     reason,
@@ -237,7 +255,11 @@ async function markActionCompleted(
 /**
  * Mark scheduled action as failed
  */
-async function markActionFailed(scheduledActionId: string, error: unknown) {
+async function markActionFailed(
+  scheduledActionId: string,
+  error: unknown,
+  log: Logger,
+) {
   await prisma.scheduledAction.update({
     where: { id: scheduledActionId },
     data: {
@@ -245,7 +267,7 @@ async function markActionFailed(scheduledActionId: string, error: unknown) {
     },
   });
 
-  logger.warn("Marked scheduled action as failed", {
+  log.warn("Marked scheduled action as failed", {
     scheduledActionId,
     error,
   });
@@ -255,7 +277,10 @@ async function markActionFailed(scheduledActionId: string, error: unknown) {
  * Check if all scheduled actions for an ExecutedRule are complete
  * and update the ExecutedRule status accordingly
  */
-async function checkAndCompleteExecutedRule(executedRuleId: string) {
+export async function checkAndCompleteExecutedRule(
+  executedRuleId: string,
+  log: Logger,
+) {
   const pendingActions = await prisma.scheduledAction.count({
     where: {
       executedRuleId,
@@ -266,13 +291,35 @@ async function checkAndCompleteExecutedRule(executedRuleId: string) {
   });
 
   if (pendingActions === 0) {
-    await prisma.executedRule.update({
-      where: { id: executedRuleId },
-      data: { status: ExecutedRuleStatus.APPLIED },
+    const failedActions = await prisma.scheduledAction.count({
+      where: {
+        executedRuleId,
+        status: ScheduledActionStatus.FAILED,
+      },
     });
 
-    logger.info("Completed ExecutedRule - all scheduled actions finished", {
-      executedRuleId,
-    });
+    if (failedActions > 0) {
+      await prisma.executedRule.update({
+        where: { id: executedRuleId },
+        data: {
+          status: ExecutedRuleStatus.ERROR,
+          reason: "One or more scheduled actions failed",
+        },
+      });
+
+      log.info("ExecutedRule errored - some scheduled actions failed", {
+        executedRuleId,
+        failedActions,
+      });
+    } else {
+      await prisma.executedRule.update({
+        where: { id: executedRuleId },
+        data: { status: ExecutedRuleStatus.APPLIED },
+      });
+
+      log.info("Completed ExecutedRule - all scheduled actions finished", {
+        executedRuleId,
+      });
+    }
   }
 }

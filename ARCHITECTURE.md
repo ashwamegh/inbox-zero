@@ -2,24 +2,28 @@
 
 The initial version of this document was created by Google Gemini 2.0 Flash Thinking Experimental 01-21.
 
-The Inbox Zero repository is structured as a monorepo, consisting of two main applications (`apps/web`, `apps/unsubscriber`) and several packages (`packages/*`). Only the `apps/web` is currently in use in production.
+The Inbox Zero repository is structured as a monorepo, consisting of the main web application (`apps/web`), supporting deployable apps, and shared packages.
 
 ```txt
 ├── apps/
-│ ├── unsubscriber/ // Unsubscribe Automation Service (Fastify, Playwright)
-│ └── web/ // Main Next.js Web Application (Frontend and Backend)
+│ ├── web/ // Main Next.js web application (frontend and backend)
+│ ├── worker/ // Background worker process
+│ ├── image-proxy/ // Cloudflare Worker image proxy
+│ └── image-proxy-aws/ // AWS image proxy
 ├── packages/ // Reusable libraries and configurations
-│ ├── eslint-config/
+│ ├── api/
+│ ├── cli/
+│ ├── image-proxy/
 │ ├── loops/
 │ ├── resend/
+│ ├── scheduling/
 │ ├── tinybird/
 │ ├── tinybird-ai-analytics/
 │ └── tsconfig/
-├── prisma/ // Database schema and migrations
-├── sanity/ // Sanity CMS configuration
-├── store/ // Jotai-based state management and queues
-├── utils/ // Utility functions, server actions, and AI logic
-├── docker/ // Docker configurations
+├── charts/ // Helm chart for Kubernetes deployments
+├── docker/ // Docker configurations and deployment scripts
+├── docs/ // Public documentation site
+├── qa/ // Browser QA flow definitions
 └── ... // Other configuration and documentation files
 ```
 
@@ -34,55 +38,36 @@ The Inbox Zero repository is structured as a monorepo, consisting of two main ap
   - `styles/`: Global CSS and styling configurations (Tailwind CSS).
   - `providers/`: React Context providers for state management and service integration.
   - `store/`: Jotai atoms for application-wide state management and queue handling.
-  - `sanity/`: Integration with Sanity CMS for blog and content management.
+  - `prisma/`: Database schema and migrations.
 - **Key Functionalities:**
   - User interface for all features (AI assistant, unsubscriber, analytics, settings).
   - User authentication and session management (Better Auth).
-  - API endpoints for interacting with Gmail API, AI models, and other services.
+  - API endpoints for interacting with Gmail, Outlook, AI models, and other services.
   - Server-side rendering and data fetching.
-  - Integration with payment processing (Lemon Squeezy) and analytics (Tinybird, PostHog).
+  - Integration with payment processing (Stripe, Lemon Squeezy, Apple IAP) and analytics/logging (Tinybird, PostHog, Axiom).
 
-### 2. `apps/unsubscriber` - Unsubscribe Automation Service
+### 2. `packages` - Reusable Packages
 
-- **Framework:** Fastify (Node.js), Playwright
-- **Purpose:** A separate, lightweight service dedicated to handling automated unsubscription from emails. This service uses Playwright for browser automation and AI for analyzing unsubscribe pages.
-- **Key Files:**
-  - `src/server.ts`: Fastify server setup and API endpoint definition.
-  - `src/main.ts`: Core logic for analyzing unsubscribe pages and performing actions using Playwright and AI.
-  - `src/llm.ts`: Integration with different LLM providers (Google AI, OpenAI, Anthropic, Bedrock).
-- **Key Functionalities:**
-  - Exposes a REST API (`/unsubscribe` endpoint) to trigger the unsubscribe process.
-  - Utilizes Playwright to automate browser interactions for unsubscribing.
-  - Employs AI (Google Gemini by default) to analyze unsubscribe pages and determine the necessary actions.
-  - Handles fallback strategies for unsubscribing when AI analysis is insufficient.
-
-### 3. `packages` - Reusable Packages
-
-- **Purpose:** Contains reusable libraries, configurations, and utilities shared between the `web` and `unsubscriber` apps.
+- **Purpose:** Contains reusable libraries, configurations, and utilities shared by the web app.
 - **Key Packages:**
-  - `eslint-config`: ESLint configurations for consistent code linting.
+  - `api`: CLI wrapper for the public API.
+  - `cli`: Self-hosting and deployment CLI.
+  - `image-proxy`: Shared image proxy utilities.
   - `loops`: Related to marketing email automation.
   - `resend`: Integration with Resend for transactional email sending.
+  - `scheduling`: Shared scheduling helpers.
   - `tinybird`: Integration with Tinybird for real-time analytics.
   - `tinybird-ai-analytics`: Integration with Tinybird for AI usage analytics.
   - `tsconfig`: Shared TypeScript configurations.
 
-### 4. `prisma` - Database Layer
+### 3. `apps/web/prisma` - Database Layer
 
 - **Purpose:** Manages the PostgreSQL database schema and migrations.
 - **Key Files:**
   - `schema.prisma`: Defines the database schema using Prisma Schema Language.
   - `migrations/`: Contains database migration files for schema updates.
 
-### 5. `sanity` - Content Management System
-
-- **Purpose:** Integrates Sanity.io as a headless CMS for managing blog posts and potentially other content.
-- **Key Files:**
-  - `sanity.config.ts`: Sanity Studio configuration.
-  - `schemaTypes/`: Defines the schema types for Sanity content.
-  - `lib/`: Contains utility functions for interacting with the Sanity API.
-
-### 6. `store` - State Management and Queues
+### 4. `apps/web/store` - State Management and Queues
 
 - **Purpose:** Implements client-side state management using Jotai and defines queues for background task processing.
 - **Key Files:**
@@ -92,7 +77,7 @@ The Inbox Zero repository is structured as a monorepo, consisting of two main ap
   - `archive-sender-queue.ts`: Queue for bulk sender archiving.
   - `ai-categorize-sender-queue.ts`: Queue for AI-based sender categorization.
 
-### 7. `utils` - Utilities and Core Logic
+### 5. `apps/web/utils` - Utilities and Core Logic
 
 - **Purpose:** Houses utility functions, shared logic, and server actions.
 - **Key Directories:**
@@ -104,7 +89,7 @@ The Inbox Zero repository is structured as a monorepo, consisting of two main ap
   - `rule/`: Rule-related utilities (prompt file parsing, rule fixing, etc.).
   - `scripts/`: Scripts for database migrations, data manipulation, and other maintenance tasks.
 
-### 8. `docker` - Docker Configuration
+### 6. `docker` - Docker Configuration
 
 - **Purpose:** Contains Dockerfile for containerizing the web application.
 - **Key Files:**
@@ -121,17 +106,17 @@ The application exposes the following API endpoints under `apps/web/app/api/`:
 - `/api/lemon-squeezy/*`: Lemon Squeezy webhook and API integration endpoints.
 - `/api/resend/*`: Resend API integration endpoints (email sending, summary emails, all emails).
 - `/api/user/*`: User-specific data and actions endpoints (planned rules, history, settings, categories, groups, cold emails, bulk archive, usage, me).
-- `/api/v1/*`: Versioned API endpoints, for external integrations (group emails, OpenAPI documentation).
+- `/api/v1/*`: Versioned API endpoints for external integrations (rules, stats, OpenAPI documentation).
 
 ## Key Data Flows
 
 1.  **Email Processing and AI Automation:**
 
-    - Gmail webhook receives email notifications.
-    - Webhook handler (`/api/google/webhook`) fetches email details from Gmail API.
+    - Gmail or Outlook webhooks receive email notifications.
+    - Provider webhook handlers fetch email details from Gmail or Microsoft Graph.
     - Email data is passed to AI rule engine (`utils/ai/choose-rule`) to find matching rules.
     - Matching rules are executed, potentially involving AI-generated actions (`utils/ai/actions`).
-    - Actions (archive, label, reply, etc.) are performed via Gmail API.
+    - Actions (archive, label, reply, etc.) are performed through the active email provider.
     - Executed rules and actions are stored in the database (Prisma).
 
 2.  **Bulk Unsubscriber:**
@@ -139,7 +124,7 @@ The application exposes the following API endpoints under `apps/web/app/api/`:
     - User initiates bulk unsubscribe process from the web UI (`apps/web/app/(app)/bulk-unsubscribe`).
     - Frontend fetches list of newsletters and senders from Tinybird analytics data (`packages/tinybird`).
     - User selects newsletters to unsubscribe from.
-    - Backend service (`apps/unsubscriber`) uses Playwright to automate unsubscribe process.
+    - Unsubscribe actions are handled inside the web application server actions and provider integrations.
     - Unsubscribe status is updated in the database.
 
 3.  **Email Analytics:**

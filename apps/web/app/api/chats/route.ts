@@ -4,7 +4,7 @@ import { withEmailAccount } from "@/utils/middleware";
 
 export type GetChatsResponse = Awaited<ReturnType<typeof getChats>>;
 
-export const GET = withEmailAccount(async (request) => {
+export const GET = withEmailAccount("chats", async (request) => {
   const emailAccountId = request.auth.emailAccountId;
   const result = await getChats({ emailAccountId });
   return NextResponse.json(result);
@@ -12,7 +12,10 @@ export const GET = withEmailAccount(async (request) => {
 
 async function getChats({ emailAccountId }: { emailAccountId: string }) {
   const chats = await prisma.chat.findMany({
-    where: { emailAccountId },
+    where: {
+      emailAccountId,
+      deletedAt: null,
+    },
     orderBy: { updatedAt: "desc" },
   });
 

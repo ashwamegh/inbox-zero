@@ -3,26 +3,35 @@
 import type * as React from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { DayPicker } from "react-day-picker";
-
 import { cn } from "@/utils";
 import { buttonVariants } from "@/components/ui/button";
 
-export type CalendarProps = React.ComponentProps<typeof DayPicker>;
+export type CalendarProps = React.ComponentProps<typeof DayPicker> & {
+  rightContent?: React.ReactNode;
+};
 
 function Calendar({
   className,
   classNames,
   showOutsideDays = true,
+  rightContent,
   ...props
 }: CalendarProps) {
+  const showMonthSeparator = (props.numberOfMonths ?? 1) > 1;
+
   return (
     <DayPicker
       showOutsideDays={showOutsideDays}
-      className={cn("p-3", className)}
+      className={className}
       classNames={{
         months: "flex flex-col sm:flex-row space-y-4 sm:space-x-4 sm:space-y-0",
         month: "space-y-4",
         caption: "flex justify-center pt-1 relative items-center",
+        caption_start: "p-3",
+        caption_end: cn(
+          "p-3",
+          showMonthSeparator && "border-l border-gray-200",
+        ),
         caption_label: "text-sm font-medium",
         nav: "space-x-1 flex items-center",
         nav_button: cn(
@@ -57,6 +66,16 @@ function Calendar({
       components={{
         IconLeft: () => <ChevronLeft className="h-4 w-4" />,
         IconRight: () => <ChevronRight className="h-4 w-4" />,
+        Months: ({ children }) => (
+          <div className="flex flex-col sm:flex-row">
+            <div className="flex flex-col sm:flex-row">{children}</div>
+            {rightContent ? (
+              <div className="order-first p-3 border-b border-gray-200 sm:order-none sm:border-b-0 sm:border-l">
+                {rightContent}
+              </div>
+            ) : null}
+          </div>
+        ),
       }}
       {...props}
     />

@@ -1,3 +1,4 @@
+import type { MouseEvent, WheelEvent } from "react";
 import { useState } from "react";
 import {
   Check,
@@ -26,11 +27,11 @@ import { FOLDER_SEPARATOR, type OutlookFolder } from "@/utils/outlook/folders";
 import type { FieldError } from "react-hook-form";
 
 interface FolderItemProps {
+  displayPath?: string;
   folder: OutlookFolder;
   level: number;
-  value: { name: string; id: string };
   onSelect: (folderId: string) => void;
-  displayPath?: string;
+  value: { name: string; id: string };
 }
 
 function FolderItem({
@@ -79,12 +80,12 @@ function FolderItem({
 }
 
 interface FolderSelectorProps {
+  error?: FieldError;
   folders: OutlookFolder[];
   isLoading: boolean;
-  value: { name: string; id: string };
   onChangeValue: (value: { name: string; id: string }) => void;
   placeholder?: string;
-  error?: FieldError;
+  value: { name: string; id: string };
 }
 
 export function FolderSelector({
@@ -208,7 +209,7 @@ export function FolderSelector({
                   <Loader2 className="h-4 w-4 animate-spin" />
                   <span>Loading folders...</span>
                 </>
-              ) : selectedFolder?.displayName ? (
+              ) : value.id ? (
                 <div className="flex items-center gap-2">
                   <FolderIcon className="h-4 w-4" />
                   <span>{value.name || selectedFolder?.displayName || ""}</span>
@@ -218,12 +219,12 @@ export function FolderSelector({
               )}
             </div>
             <div className="flex items-center gap-1">
-              {selectedFolder?.displayName && !isLoading && (
+              {value.id && !isLoading && (
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-6 w-6 p-0 hover:bg-muted"
-                  onClick={(e) => {
+                  onClick={(e: MouseEvent<HTMLButtonElement>) => {
                     e.stopPropagation();
                     onChangeValue({ name: "", id: "" });
                   }}
@@ -243,7 +244,12 @@ export function FolderSelector({
               value={searchQuery}
               onValueChange={setSearchQuery}
             />
-            <CommandList>
+            <CommandList
+              onWheelCapture={(e: WheelEvent<HTMLDivElement>) => {
+                e.preventDefault();
+                e.currentTarget.scrollTop += e.deltaY;
+              }}
+            >
               {isLoading ? (
                 <div className="flex items-center justify-center py-6">
                   <Loader2 className="h-4 w-4 animate-spin mr-2" />
@@ -253,18 +259,16 @@ export function FolderSelector({
                 <>
                   <CommandEmpty>No folder found.</CommandEmpty>
                   <CommandGroup>
-                    {filteredFolders.map(({ folder, displayPath }) => {
-                      return (
-                        <FolderItem
-                          key={folder.id}
-                          folder={folder}
-                          level={0}
-                          value={value}
-                          onSelect={handleFolderSelect}
-                          displayPath={displayPath}
-                        />
-                      );
-                    })}
+                    {filteredFolders.map(({ folder, displayPath }) => (
+                      <FolderItem
+                        key={folder.id}
+                        folder={folder}
+                        level={0}
+                        value={value}
+                        onSelect={handleFolderSelect}
+                        displayPath={displayPath}
+                      />
+                    ))}
                   </CommandGroup>
                 </>
               )}

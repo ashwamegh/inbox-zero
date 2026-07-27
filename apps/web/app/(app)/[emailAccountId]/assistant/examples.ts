@@ -1,4 +1,5 @@
 import { getEmailTerminology } from "@/utils/terminology";
+import { BRAND_NAME } from "@/utils/branding";
 
 export type Personas = ReturnType<typeof getPersonas>;
 
@@ -43,15 +44,15 @@ function processPromptsWithTerminology(
 }
 
 const commonPrompts = [
-  "Label urgent emails as @[Urgent]",
   "Label emails from @mycompany.com addresses as @[Team]",
+  "Label urgent emails as @[Urgent]",
 ];
 
 const examplePromptsBase = [
   ...commonPrompts,
   "Forward receipts to jane@accounting.com and label them @[Receipt]",
   "Forward pitch decks to john@investing.com and label them @[Pitch Deck]",
-  "Reply to cold emails by telling them to check out Inbox Zero. Then mark them as spam",
+  `Reply to cold emails by telling them to check out ${BRAND_NAME}. Then mark them as spam`,
   "Label high priority emails as @[High Priority]",
   "If a founder asks to set up a call, draft a reply with my calendar link: https://cal.com/example",
   "If someone asks to cancel a plan, draft a reply with the cancellation link: https://company.com/cancel",
@@ -61,7 +62,7 @@ const examplePromptsBase = [
   "If someone asks for help with Product or Company, draft a reply telling them I no longer work there, but they should reach out to Company for support",
   "Review any emails from questions@pr.com and see if any are about finance. If so, draft a friendly reply that answers the question",
   "If people ask me to speak at an event, label the email @[Speaker Opportunity] and archive it",
-  "Label customer emails as @[Customer]",
+  "Label emails from customers as @[Customer]",
   "Label legal documents as @[Legal]",
   "Label server errors as @[Error]",
   "Label Stripe emails as @[Stripe]",
@@ -80,8 +81,8 @@ export function getExamplePrompts(
 const founderPromptArray = [
   ...commonPrompts,
   "If someone asks to set up a call, draft a reply with my calendar link: https://cal.com/example",
-  "Label customer feedback emails as @[Customer Feedback]",
-  "Label customer support emails as @[Customer Support]",
+  "Label emails with feedback from customers about our product as @[Customer Feedback]",
+  "Label emails from customers who need our help and support as @[Customer Support]",
   "Label emails from investors as @[Investor]",
   "Label legal documents as @[Legal]",
   "Label emails about travel as @[Travel]",
@@ -109,7 +110,7 @@ export function getPersonas(provider: string) {
           "Label emails about affiliate programs as @[Affiliate] and archive them",
           "Label collaboration requests as @[Collab] and draft a reply asking about their audience size and engagement rates",
           "Label brand partnership emails as @[Brand Deal] and forward to manager@example.com",
-          "Label media inquiries as @[Press] and draft a reply a polite reply",
+          "Label media inquiries to us as @[Press] and draft a polite reply",
         ],
         provider,
       ),
@@ -244,7 +245,7 @@ export function getPersonas(provider: string) {
           ...commonPrompts,
           "Label emails from influencers as @[Influencer]",
           "Label emails from ad platforms (Google, Meta, LinkedIn) as @[Advertising]",
-          "Label press inquiries as @[Press] and forward to pr@company.com",
+          "Label press inquiries to us as @[Press] and forward to pr@company.com",
           "Label emails about content marketing as @[Content]",
           "If someone asks about sponsorship, label as @[Sponsorship] and draft a reply asking about their audience size",
           "If someone requests to guest post, label as @[Guest Post] and draft a reply with our guidelines",
@@ -262,7 +263,7 @@ export function getPersonas(provider: string) {
       promptArray: processPromptsWithTerminology(
         [
           ...commonPrompts,
-          "Label customer support tickets as @[Support Ticket]",
+          "Label customer requests for help as @[Support Ticket]",
           "If someone reports a critical issue, label as @[Urgent Support] and forward to urgent@company.com",
           "Label bug reports as @[Bug] and forward to engineering@company.com",
           "Label feature requests as @[Feature Request] and forward to product@company.com",

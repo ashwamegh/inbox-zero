@@ -10,7 +10,9 @@ async function getLabels(options: { emailAccountId: string }) {
   });
 }
 
-export const GET = withEmailAccount(async (request) => {
+export const maxDuration = 10;
+
+export const GET = withEmailAccount("user/labels", async (request) => {
   const emailAccountId = request.auth.emailAccountId;
 
   const labels = await getLabels({ emailAccountId });

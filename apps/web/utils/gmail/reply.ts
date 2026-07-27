@@ -1,4 +1,9 @@
 import type { ParsedMessage } from "@/utils/types";
+import {
+  buildQuotedPlainText,
+  quotePlainTextContent,
+} from "@/utils/email/quoted-plain-text";
+import { convertNewlinesToBr, escapeHtml } from "@/utils/string";
 
 export const createReplyContent = ({
   textContent,
@@ -20,24 +25,25 @@ export const createReplyContent = ({
   const dirAttribute = `dir="${textDirection}"`;
 
   // Format plain text version with proper quoting
-  const quotedContent = message.textPlain
-    ?.split("\n")
-    .map((line) => `> ${line}`)
-    .join("\n");
-  const plainText = `${textContent}\n\n${quotedHeader}\n\n${quotedContent}`;
+  const quotedContent = quotePlainTextContent(message.textPlain);
+  const plainText = buildQuotedPlainText({
+    textContent,
+    quotedHeader,
+    quotedContent,
+  });
 
-  // Get the message content, preserving any existing quotes
   const messageContent =
-    message.textHtml || message.textPlain?.replace(/\n/g, "<br>") || "";
+    message.textHtml ||
+    (message.textPlain ? convertNewlinesToBr(message.textPlain) : "");
 
-  // Use htmlContent if provided, otherwise convert textContent to HTML
-  const contentHtml = htmlContent || textContent?.replace(/\n/g, "<br>") || "";
+  const contentHtml =
+    htmlContent || (textContent ? convertNewlinesToBr(textContent) : "");
 
   // Format HTML version with Gmail-style quote formatting
   const html = `<div ${dirAttribute}>${contentHtml}</div>
 <br>
 <div class="gmail_quote gmail_quote_container">
-  <div ${dirAttribute} class="gmail_attr">${quotedHeader}<br></div>
+  <div ${dirAttribute} class="gmail_attr">${escapeHtml(quotedHeader)}<br></div>
   <blockquote class="gmail_quote" 
     style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">
     ${messageContent}

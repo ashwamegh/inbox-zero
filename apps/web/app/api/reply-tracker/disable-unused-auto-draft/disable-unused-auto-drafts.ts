@@ -1,18 +1,16 @@
 import groupBy from "lodash/groupBy";
-import subDays from "date-fns/subDays";
+import { subDays } from "date-fns/subDays";
 import prisma from "@/utils/prisma";
-import { ActionType } from "@prisma/client";
-import { createScopedLogger } from "@/utils/logger";
+import { ActionType, DraftEmailStatus } from "@/generated/prisma/enums";
+import type { Logger } from "@/utils/logger";
 
 const MAX_DRAFTS_TO_CHECK = 10;
-
-const logger = createScopedLogger("auto-draft/disable-unused");
 
 /**
  * Disables auto-draft feature for users who haven't used their last 10 drafts
  * Only checks drafts that are more than a day old to give users time to use them
  */
-export async function disableUnusedAutoDrafts() {
+export async function disableUnusedAutoDrafts(logger: Logger) {
   logger.info("Starting to check for unused auto-drafts");
 
   // Find all users who have the auto-draft feature enabled (have an Action of type DRAFT_EMAIL)
@@ -57,8 +55,8 @@ export async function disableUnusedAutoDrafts() {
         count: executedDraftActions.length,
       });
 
-      const anyDraftsSent = executedDraftActions.some(
-        (action) => action.wasDraftSent === true,
+      const anyDraftsSent = executedDraftActions.some((action) =>
+        isSentDraftStatus(action.draftStatus),
       );
 
       if (anyDraftsSent) {
@@ -115,13 +113,17 @@ async function findExecutedDraftActions(ruleIds: string[]) {
     },
     select: {
       id: true,
-      wasDraftSent: true,
+      draftStatus: true,
     },
     orderBy: {
       createdAt: "desc",
     },
     take: MAX_DRAFTS_TO_CHECK,
   });
+}
+
+function isSentDraftStatus(status: DraftEmailStatus | null): boolean {
+  return status === DraftEmailStatus.LIKELY_SENT;
 }
 
 async function deleteAutoDraftActions(actionIds: string[]) {

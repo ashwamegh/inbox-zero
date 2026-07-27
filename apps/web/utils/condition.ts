@@ -1,17 +1,11 @@
-import {
-  CategoryFilterType,
-  LogicalOperator,
-  type Category,
-  type Rule,
-} from "@prisma/client";
+import { LogicalOperator } from "@/generated/prisma/enums";
+import type { Rule } from "@/generated/prisma/client";
 import { ConditionType, type CoreConditionType } from "@/utils/config";
 import type {
   CreateRuleBody,
   ZodCondition,
 } from "@/utils/actions/rule.validation";
-import { createScopedLogger } from "@/utils/logger";
-
-const logger = createScopedLogger("condition");
+import type { Logger } from "@/utils/logger";
 
 export type RuleConditions = Partial<
   Pick<
@@ -22,11 +16,9 @@ export type RuleConditions = Partial<
     | "to"
     | "subject"
     | "body"
-    | "categoryFilterType"
     | "conditionalOperator"
   > & {
     group?: { name: string } | null;
-    categoryFilters?: Pick<Category, "id" | "name">[];
   }
 >;
 
@@ -46,10 +38,6 @@ export function isStaticRule(rule: RuleConditions) {
   return !!rule.from || !!rule.to || !!rule.subject || !!rule.body;
 }
 
-export function isCategoryRule(rule: RuleConditions) {
-  return !!(rule.categoryFilters?.length && rule.categoryFilterType);
-}
-
 export function getConditions(rule: RuleConditions) {
   const conditions: CreateRuleBody["conditions"] = [];
 
@@ -57,25 +45,56 @@ export function getConditions(rule: RuleConditions) {
     conditions.push({
       type: ConditionType.AI,
       instructions: rule.instructions,
+      from: null,
+      to: null,
+      subject: null,
+      body: null,
     });
   }
 
   if (isStaticRule(rule)) {
-    conditions.push({
-      type: ConditionType.STATIC,
-      from: rule.from,
-      to: rule.to,
-      subject: rule.subject,
-      body: rule.body,
-    });
-  }
-
-  if (isCategoryRule(rule)) {
-    conditions.push({
-      type: ConditionType.CATEGORY,
-      categoryFilterType: rule.categoryFilterType,
-      categoryFilters: rule.categoryFilters?.map((category) => category.id),
-    });
+    // Split static conditions into separate conditions for each populated field
+    // This matches the new UI where each condition has only one field
+    if (rule.from) {
+      conditions.push({
+        type: ConditionType.STATIC,
+        from: rule.from,
+        to: null,
+        subject: null,
+        body: null,
+        instructions: null,
+      });
+    }
+    if (rule.to) {
+      conditions.push({
+        type: ConditionType.STATIC,
+        from: null,
+        to: rule.to,
+        subject: null,
+        body: null,
+        instructions: null,
+      });
+    }
+    if (rule.subject) {
+      conditions.push({
+        type: ConditionType.STATIC,
+        from: null,
+        to: null,
+        subject: rule.subject,
+        body: null,
+        instructions: null,
+      });
+    }
+    if (rule.body) {
+      conditions.push({
+        type: ConditionType.STATIC,
+        from: null,
+        to: null,
+        subject: null,
+        body: rule.body,
+        instructions: null,
+      });
+    }
   }
 
   return conditions;
@@ -83,20 +102,17 @@ export function getConditions(rule: RuleConditions) {
 
 export function getConditionTypes(
   rule: RuleConditions,
-): Record<ConditionType, boolean> {
+): Record<CoreConditionType, boolean> {
   return getConditions(rule).reduce(
     (acc, condition) => {
       acc[condition.type] = true;
       return acc;
     },
-    {} as Record<ConditionType, boolean>,
+    {} as Record<CoreConditionType, boolean>,
   );
 }
 
-export function getEmptyCondition(
-  type: CoreConditionType,
-  category?: string,
-): ZodCondition {
+export function getEmptyCondition(type: CoreConditionType): ZodCondition {
   switch (type) {
     case ConditionType.AI:
       return {
@@ -104,18 +120,14 @@ export function getEmptyCondition(
         instructions: "",
       };
     case ConditionType.STATIC:
+      // Default to "from" field for new STATIC conditions
       return {
         type: ConditionType.STATIC,
         from: null,
         to: null,
         subject: null,
         body: null,
-      };
-    case ConditionType.CATEGORY:
-      return {
-        type: ConditionType.CATEGORY,
-        categoryFilterType: CategoryFilterType.INCLUDE,
-        categoryFilters: category ? [category] : null,
+        instructions: null,
       };
     default:
       // biome-ignore lint/correctness/noSwitchDeclarations: intentional exhaustive check
@@ -130,12 +142,11 @@ type FlattenedConditions = {
   to?: string | null;
   subject?: string | null;
   body?: string | null;
-  categoryFilterType?: CategoryFilterType | null;
-  categoryFilters?: string[] | null;
 };
 
 export const flattenConditions = (
   conditions: ZodCondition[],
+  logger: Logger,
 ): FlattenedConditions => {
   return conditions.reduce((acc, condition) => {
     switch (condition.type) {
@@ -143,14 +154,10 @@ export const flattenConditions = (
         acc.instructions = condition.instructions;
         break;
       case ConditionType.STATIC:
-        acc.to = condition.to;
-        acc.from = condition.from;
-        acc.subject = condition.subject;
-        acc.body = condition.body;
-        break;
-      case ConditionType.CATEGORY:
-        acc.categoryFilterType = condition.categoryFilterType;
-        acc.categoryFilters = condition.categoryFilters;
+        if (condition.to) acc.to = condition.to;
+        if (condition.from) acc.from = condition.from;
+        if (condition.subject) acc.subject = condition.subject;
+        if (condition.body) acc.body = condition.body;
         break;
       default:
         logger.warn("Unknown condition type", { condition });
@@ -178,10 +185,8 @@ function conditionTypeToString(conditionType: ConditionType): string {
       return "AI";
     case ConditionType.STATIC:
       return "Static";
-    case ConditionType.GROUP:
+    case ConditionType.LEARNED_PATTERN:
       return "Group";
-    case ConditionType.CATEGORY:
-      return "Category";
     case ConditionType.PRESET:
       return "Preset";
     default:
@@ -207,36 +212,5 @@ export function conditionsToString(rule: RuleConditions) {
   // AI condition
   if (rule.instructions) conditions.push(rule.instructions);
 
-  // Category condition
-  const categoryFilters = rule.categoryFilters;
-  if (rule.categoryFilterType && categoryFilters?.length) {
-    const max = 3;
-    const categories =
-      categoryFilters
-        .slice(0, max)
-        .map((category) => category.name)
-        .join(", ") + (categoryFilters.length > max ? ", ..." : "");
-    conditions.push(
-      `${rule.categoryFilterType === CategoryFilterType.EXCLUDE ? "Exclude " : ""}${
-        categoryFilters.length === 1 ? "Category" : "Categories"
-      }: ${categories}`,
-    );
-  }
-
   return conditions.join(connector);
-}
-
-export function categoryFilterTypeToString(
-  categoryFilterType: CategoryFilterType,
-): string {
-  switch (categoryFilterType) {
-    case CategoryFilterType.INCLUDE:
-      return "Include";
-    case CategoryFilterType.EXCLUDE:
-      return "Exclude";
-    default:
-      // biome-ignore lint/correctness/noSwitchDeclarations: intentional exhaustive check
-      const exhaustiveCheck: never = categoryFilterType;
-      return exhaustiveCheck;
-  }
 }

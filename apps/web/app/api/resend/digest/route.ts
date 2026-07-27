@@ -1,53 +1,58 @@
-import { type NextRequest, NextResponse } from "next/server";
-import { sendDigestEmail } from "@inboxzero/resend";
+import { NextResponse } from "next/server";
 import { withEmailAccount, withError } from "@/utils/middleware";
-import { env } from "@/env";
 import { captureException, SafeError } from "@/utils/error";
 import prisma from "@/utils/prisma";
-import { createScopedLogger } from "@/utils/logger";
+import type { Logger } from "@/utils/logger";
 import { createUnsubscribeToken } from "@/utils/unsubscribe";
-import { calculateNextScheduleDate } from "@/utils/schedule";
+import {
+  getDigestScheduleProgression,
+  isDigestScheduleDue,
+} from "@/utils/digest/schedule";
+import { sendDigest } from "@/utils/digest/send-digest";
 import type { ParsedMessage } from "@/utils/types";
 import {
   sendDigestEmailBody,
   storedDigestContentSchema,
   type Digest,
 } from "./validation";
-import { DigestStatus } from "@prisma/client";
+import { DigestStatus, SystemType } from "@/generated/prisma/enums";
 import { extractNameFromEmail } from "../../../../utils/email";
-import { RuleName } from "@/utils/rule/consts";
-import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
-import { camelCase } from "lodash";
+import { getRuleName } from "@/utils/rule/consts";
+import camelCase from "lodash/camelCase";
 import { createEmailProvider } from "@/utils/email/provider";
 import { sleep } from "@/utils/sleep";
+import { withQstashOrInternal } from "@/utils/qstash";
 
 export const maxDuration = 60;
-
-const logger = createScopedLogger("resend/digest");
 
 type SendEmailResult = {
   success: boolean;
   message: string;
 };
 
-export const GET = withEmailAccount(async (request) => {
+export const GET = withEmailAccount("resend/digest", async (request) => {
   // send to self
   const emailAccountId = request.auth.emailAccountId;
 
-  logger.info("Sending digest email to user GET", { emailAccountId });
+  const logger = request.logger.with({
+    force: true,
+  });
 
-  const result = await sendEmail({ emailAccountId, force: true });
+  logger.info("Sending digest email to user GET");
+
+  const result = await sendEmail({ emailAccountId, force: true, logger });
 
   return NextResponse.json(result);
 });
 
 export const POST = withError(
-  verifySignatureAppRouter(async (request: NextRequest) => {
+  "resend/digest",
+  withQstashOrInternal(async (request) => {
     const json = await request.json();
     const { success, data, error } = sendDigestEmailBody.safeParse(json);
 
     if (!success) {
-      logger.error("Invalid request body", { error });
+      request.logger.error("Invalid request body", { error });
       return NextResponse.json(
         { error: "Invalid request body" },
         { status: 400 },
@@ -55,18 +60,22 @@ export const POST = withError(
     }
     const { emailAccountId } = data;
 
-    logger.info("Sending digest email to user POST", { emailAccountId });
+    const logger = request.logger.with({ emailAccountId });
+
+    logger.info("Sending digest email to user POST");
 
     try {
-      const result = await sendEmail({ emailAccountId });
+      const result = await sendEmail({ emailAccountId, logger });
       return NextResponse.json(result);
     } catch (error) {
       logger.error("Error sending digest email", { error });
-      captureException(error);
-      return NextResponse.json(
-        { success: false, error: "Error sending digest email" },
-        { status: 500 },
-      );
+      captureException(error, { emailAccountId });
+      // Return 200 to prevent queue retries — failed digests are already marked
+      // FAILED in the DB, and retrying won't help (expired tokens, timeouts, etc.)
+      return NextResponse.json({
+        success: false,
+        error: "Error sending digest email",
+      });
     }
   }),
 );
@@ -93,18 +102,20 @@ async function getDigestSchedule({
 async function sendEmail({
   emailAccountId,
   force,
+  logger,
 }: {
   emailAccountId: string;
   force?: boolean;
+  logger: Logger;
 }): Promise<SendEmailResult> {
-  const loggerOptions = { emailAccountId, force };
-  logger.info("Sending digest email", loggerOptions);
+  logger.info("Sending digest email");
+  const now = new Date();
 
   const emailAccount = await prisma.emailAccount.findUnique({
     where: { id: emailAccountId },
     select: {
       email: true,
-      account: { select: { provider: true } },
+      account: { select: { provider: true, refresh_token: true } },
     },
   });
 
@@ -112,12 +123,35 @@ async function sendEmail({
     throw new Error("Email account not found");
   }
 
+  if (!emailAccount.account.refresh_token) {
+    logger.warn("Skipping digest: account has no refresh token");
+    return { success: false, message: "Account has no refresh token" };
+  }
+
   const emailProvider = await createEmailProvider({
     emailAccountId,
-    provider: emailAccount?.account.provider ?? null,
+    provider: emailAccount.account.provider,
+    logger,
   });
 
   const digestScheduleData = await getDigestSchedule({ emailAccountId });
+  const digestScheduleProgression = digestScheduleData
+    ? getDigestScheduleProgression(digestScheduleData, now)
+    : null;
+
+  if (!force) {
+    if (!digestScheduleData) {
+      logger.info("Skipping digest send because no schedule is configured");
+      return { success: true, message: "Digest schedule is not configured" };
+    }
+
+    if (!isDigestScheduleDue(digestScheduleData, now)) {
+      logger.info("Skipping digest send because schedule is not due", {
+        nextOccurrenceAt: digestScheduleData.nextOccurrenceAt,
+      });
+      return { success: true, message: "Digest schedule is not due yet" };
+    }
+  }
 
   const pendingDigests = await prisma.digest.findMany({
     where: {
@@ -166,6 +200,16 @@ async function sendEmail({
     // Return early if no digests were found, unless force is true
     if (pendingDigests.length === 0) {
       if (!force) {
+        if (digestScheduleData && digestScheduleProgression) {
+          await prisma.schedule.update({
+            where: {
+              id: digestScheduleData.id,
+              emailAccountId,
+            },
+            data: digestScheduleProgression,
+          });
+        }
+
         return { success: true, message: "No digests to process" };
       }
       // When force is true, send an empty digest to indicate the system is working
@@ -179,7 +223,7 @@ async function sendEmail({
       digest.items.map((item) => item.messageId),
     );
 
-    logger.info("Fetching batch of messages", loggerOptions);
+    logger.info("Fetching batch of messages");
 
     const messages: ParsedMessage[] = [];
     if (messageIds.length > 0) {
@@ -199,7 +243,7 @@ async function sendEmail({
       }
     }
 
-    logger.info("Fetched batch of messages", loggerOptions);
+    logger.info("Fetched batch of messages");
 
     // Create a message lookup map for O(1) access
     const messageMap = new Map(messages.map((m) => [m.id, m]));
@@ -219,7 +263,8 @@ async function sendEmail({
         }
 
         const ruleName =
-          item.action?.executedRule?.rule?.name || RuleName.ColdEmail;
+          item.action?.executedRule?.rule?.name ||
+          getRuleName(SystemType.COLD_EMAIL);
 
         const ruleNameKey = camelCase(ruleName);
         if (!ruleNameMap.has(ruleNameKey)) {
@@ -263,10 +308,7 @@ async function sendEmail({
     }, {} as Digest);
 
     if (Object.keys(executedRulesByRule).length === 0) {
-      logger.info(
-        "No executed rules found, skipping digest email",
-        loggerOptions,
-      );
+      logger.info("No executed rules found, skipping digest email");
       return {
         success: true,
         message: "No executed rules found, skipping digest email",
@@ -275,38 +317,31 @@ async function sendEmail({
 
     const token = await createUnsubscribeToken({ emailAccountId });
 
-    logger.info("Sending digest email", loggerOptions);
+    logger.info("Sending digest");
 
-    // First, send the digest email and wait for it to complete
-    await sendDigestEmail({
-      from: env.RESEND_FROM_EMAIL,
-      to: emailAccount.email,
-      emailProps: {
-        baseUrl: env.NEXT_PUBLIC_BASE_URL,
-        unsubscribeToken: token,
-        date: new Date(),
-        ruleNames: Object.fromEntries(ruleNameMap),
-        ...executedRulesByRule,
-        emailAccountId,
-      },
+    await sendDigest({
+      emailAccountId,
+      userEmail: emailAccount.email,
+      unsubscribeToken: token,
+      date: new Date(),
+      ruleNames: Object.fromEntries(ruleNameMap),
+      itemsByRule: executedRulesByRule,
+      logger,
     });
 
-    logger.info("Digest email sent", loggerOptions);
+    logger.info("Digest sent");
 
     // Only update database if email sending succeeded
     // Use a transaction to ensure atomicity - all updates succeed or none are applied
     await prisma.$transaction([
-      ...(digestScheduleData
+      ...(!force && digestScheduleData && digestScheduleProgression
         ? [
             prisma.schedule.update({
               where: {
                 id: digestScheduleData.id,
                 emailAccountId,
               },
-              data: {
-                lastOccurrenceAt: new Date(),
-                nextOccurrenceAt: calculateNextScheduleDate(digestScheduleData),
-              },
+              data: digestScheduleProgression,
             }),
           ]
         : []),

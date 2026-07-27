@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import format from "date-fns/format";
+import { format } from "date-fns/format";
 import { zodPeriod } from "@inboxzero/tinybird";
 import { withEmailAccount } from "@/utils/middleware";
 import prisma from "@/utils/prisma";
-import { Prisma } from "@prisma/client";
+import { Prisma } from "@/generated/prisma/client";
 
 const senderEmailsQuery = z.object({
   fromEmail: z.string(),
@@ -69,22 +69,25 @@ async function getSenderEmails(
   };
 }
 
-export const GET = withEmailAccount(async (request) => {
-  const emailAccountId = request.auth.emailAccountId;
+export const GET = withEmailAccount(
+  "user/stats/sender-emails",
+  async (request) => {
+    const emailAccountId = request.auth.emailAccountId;
 
-  const { searchParams } = new URL(request.url);
+    const { searchParams } = new URL(request.url);
 
-  const query = senderEmailsQuery.parse({
-    fromEmail: searchParams.get("fromEmail"),
-    period: searchParams.get("period") || "week",
-    fromDate: searchParams.get("fromDate"),
-    toDate: searchParams.get("toDate"),
-  });
+    const query = senderEmailsQuery.parse({
+      fromEmail: searchParams.get("fromEmail"),
+      period: searchParams.get("period") || "week",
+      fromDate: searchParams.get("fromDate"),
+      toDate: searchParams.get("toDate"),
+    });
 
-  const result = await getSenderEmails({
-    ...query,
-    emailAccountId,
-  });
+    const result = await getSenderEmails({
+      ...query,
+      emailAccountId,
+    });
 
-  return NextResponse.json(result);
-});
+    return NextResponse.json(result);
+  },
+);

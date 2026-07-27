@@ -1,40 +1,30 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
-import {
-  type FieldError,
-  type FieldErrors,
-  type SubmitHandler,
-  useFieldArray,
-  useForm,
-} from "react-hook-form";
+import { type SubmitHandler, useFieldArray, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { toast } from "sonner";
-import TextareaAutosize from "react-textarea-autosize";
-import { capitalCase } from "capital-case";
 import { usePostHog } from "posthog-js/react";
+import { env } from "@/env";
+import { isDeleteEmailActionEnabled } from "@/utils/delete-email-action";
 import {
-  ExternalLinkIcon,
-  PlusIcon,
-  FilterIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
   PencilIcon,
   TrashIcon,
+  InboxIcon,
+  ZapIcon,
+  ChevronRightIcon,
 } from "lucide-react";
-import { CardBasic } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ErrorMessage, Input, Label } from "@/components/Input";
+import { Input } from "@/components/Input";
 import { toastError, toastSuccess } from "@/components/Toast";
-import { SectionDescription, TypographyH3 } from "@/components/Typography";
-import {
-  ActionType,
-  CategoryFilterType,
-  LogicalOperator,
-} from "@prisma/client";
-import { ConditionType, type CoreConditionType } from "@/utils/config";
+import { TypographyH3 } from "@/components/Typography";
+import { ActionType, SystemType } from "@/generated/prisma/enums";
 import {
   createRuleAction,
   deleteRuleAction,
@@ -44,60 +34,61 @@ import {
   type CreateRuleBody,
   createRuleBody,
 } from "@/utils/actions/rule.validation";
-import { actionInputs } from "@/utils/action-item";
 import { Toggle } from "@/components/Toggle";
-import { LoadingContent } from "@/components/LoadingContent";
-import { TooltipExplanation } from "@/components/TooltipExplanation";
-import { Combobox } from "@/components/Combobox";
+import { Tooltip } from "@/components/Tooltip";
 import { useLabels } from "@/hooks/useLabels";
-import { createLabelAction } from "@/utils/actions/mail";
-import { MultiSelectFilter } from "@/components/MultiSelectFilter";
-import { useCategories } from "@/hooks/useCategories";
-import { hasVariables } from "@/utils/template";
-import { getEmptyCondition } from "@/utils/condition";
+import { useMessagingChannels } from "@/hooks/useMessagingChannels";
 import { AlertError } from "@/components/Alert";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { LearnedPatternsDialog } from "@/app/(app)/[emailAccountId]/assistant/group/LearnedPatterns";
-import { NEEDS_REPLY_LABEL_NAME } from "@/utils/reply-tracker/consts";
-import { Badge } from "@/components/Badge";
 import { useAccount } from "@/providers/EmailAccountProvider";
 import { prefixPath } from "@/utils/path";
-import { useRule } from "@/hooks/useRule";
-import { isMicrosoftProvider } from "@/utils/email/provider-types";
 import { getEmailTerminology } from "@/utils/terminology";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { ActionSummaryCard } from "@/app/(app)/[emailAccountId]/assistant/ActionSummaryCard";
-import { ConditionSummaryCard } from "@/app/(app)/[emailAccountId]/assistant/ConditionSummaryCard";
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { Form } from "@/components/ui/form";
+import { cn } from "@/utils";
+import { ACTION_TYPE_LABELS, getActionIcon } from "@/utils/action-display";
+import { useFolders } from "@/hooks/useFolders";
+import { isConversationStatusType } from "@/utils/reply-tracker/conversation-status-config";
+import { RuleSectionCard } from "@/app/(app)/[emailAccountId]/assistant/RuleSectionCard";
+import { ConditionSteps } from "@/app/(app)/[emailAccountId]/assistant/ConditionSteps";
+import {
+  ActionSteps,
+  formatMessagingDestinationLabel,
+} from "@/app/(app)/[emailAccountId]/assistant/ActionSteps";
+import Link from "next/link";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
-  SelectValue,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
-import { Form, FormControl, FormField, FormItem } from "@/components/ui/form";
-import { isDefined } from "@/utils/types";
-import { canActionBeDelayed } from "@/utils/delayed-actions";
-import { useDelayedActionsEnabled } from "@/hooks/useFeatureFlags";
-import type { EmailLabel } from "@/providers/EmailProvider";
-import { FolderSelector } from "@/components/FolderSelector";
-import { useFolders } from "@/hooks/useFolders";
-import type { OutlookFolder } from "@/utils/outlook/folders";
-import { cn } from "@/utils";
-import { WebhookDocumentationLink } from "@/components/WebhookDocumentation";
+import { getMessagingProviderName } from "@/utils/messaging/platforms";
+import { RuleLoader } from "@/app/(app)/[emailAccountId]/assistant/RuleLoader";
+import {
+  getAvailableActionsForRuleEditor,
+  getExtraAvailableActionsForRuleEditor,
+} from "@/utils/ai/rule/action-availability";
+import { handleRuleAttachmentSourceSave } from "@/utils/attachments/rule";
+import type { AttachmentSourceInput } from "@/utils/attachments/source-schema";
+import type { GetMessagingChannelsResponse } from "@/app/api/user/messaging-channels/route";
+import { usePremium } from "@/hooks/usePremium";
+import { hasTierAccess } from "@/utils/premium";
+import { UpgradeToPlusButton } from "@/components/UpgradeToPlusButton";
+import { getConnectedRuleNotificationChannels } from "@/utils/messaging/routes";
+import { sortActionsByPriority } from "@/utils/action-sort";
+import {
+  denormalizeDraftReplyActions,
+  normalizeDraftReplyActions,
+} from "@/app/(app)/[emailAccountId]/assistant/draftReplyActions";
+import { isDraftReplyActionType } from "@/utils/actions/draft-reply";
 
 export function Rule({
   ruleId,
@@ -106,18 +97,12 @@ export function Rule({
   ruleId: string;
   alwaysEditMode?: boolean;
 }) {
-  const { data, isLoading, error, mutate } = useRule(ruleId);
-
   return (
-    <LoadingContent loading={isLoading} error={error}>
-      {data && (
-        <RuleForm
-          rule={data.rule}
-          alwaysEditMode={alwaysEditMode}
-          mutate={mutate}
-        />
+    <RuleLoader ruleId={ruleId}>
+      {({ rule, mutate }) => (
+        <RuleForm rule={rule} alwaysEditMode={alwaysEditMode} mutate={mutate} />
       )}
-    </LoadingContent>
+    </RuleLoader>
   );
 }
 
@@ -129,41 +114,64 @@ export function RuleForm({
   mutate,
   onCancel,
 }: {
-  rule: CreateRuleBody & { id?: string };
+  rule: CreateRuleBody & {
+    id?: string;
+    attachmentSources?: Array<{
+      driveConnectionId: string;
+      name: string;
+      sourceId: string;
+      sourcePath: string | null;
+      type: AttachmentSourceInput["type"];
+    }>;
+  };
   alwaysEditMode?: boolean;
   onSuccess?: () => void;
   isDialog?: boolean;
-  // biome-ignore lint/suspicious/noExplicitAny: lazy
+  // biome-ignore lint/suspicious/noExplicitAny: existing loose external shape
   mutate?: (data?: any, options?: any) => void;
   onCancel?: () => void;
 }) {
   const { emailAccountId, provider } = useAccount();
+  const { tier, isLoading: isLoadingPremium } = usePremium();
+  const hasDigestAccess = hasTierAccess({
+    tier,
+    minimumTier: "PLUS_MONTHLY",
+  });
+  const ruleEditorActions = getRuleEditorActions(rule.actions);
 
   const form = useForm<CreateRuleBody>({
     resolver: zodResolver(createRuleBody),
     defaultValues: rule
       ? {
           ...rule,
-          digest: rule.actions.some(
+          digest: ruleEditorActions.some(
             (action) => action.type === ActionType.DIGEST,
           ),
+          notifyMessagingChannelId:
+            ruleEditorActions.find(
+              (action) => action.type === ActionType.NOTIFY_MESSAGING_CHANNEL,
+            )?.messagingChannelId ?? null,
           actions: [
-            ...rule.actions
-              .filter(
-                (action) =>
-                  action.type !== ActionType.DIGEST &&
-                  action.type !== ActionType.TRACK_THREAD,
-              )
-              .map((action) => ({
-                ...action,
-                delayInMinutes: action.delayInMinutes,
-                content: {
-                  ...action.content,
-                  setManually: !!action.content?.value,
-                },
-                folderName: action.folderName,
-                folderId: action.folderId,
-              })),
+            ...normalizeDraftReplyActions(
+              sortActionsByPriority(
+                ruleEditorActions
+                  .filter(
+                    (action) =>
+                      action.type !== ActionType.DIGEST &&
+                      action.type !== ActionType.NOTIFY_MESSAGING_CHANNEL,
+                  )
+                  .map((action) => ({
+                    ...action,
+                    delayInMinutes: action.delayInMinutes,
+                    content: {
+                      ...action.content,
+                      setManually: !!action.content?.value,
+                    },
+                    folderName: action.folderName,
+                    folderId: action.folderId,
+                  })),
+              ),
+            ),
           ],
         }
       : undefined,
@@ -175,9 +183,11 @@ export function RuleForm({
     watch,
     setValue,
     control,
-    formState: { errors, isSubmitting, isSubmitted },
+    formState,
     trigger,
   } = form;
+
+  const { errors, isSubmitting, isSubmitted } = formState;
 
   const {
     fields: conditionFields,
@@ -187,51 +197,83 @@ export function RuleForm({
     control,
     name: "conditions",
   });
-  const { append, remove } = useFieldArray({ control, name: "actions" });
+  const {
+    fields: actionFields,
+    append,
+    remove,
+    replace,
+  } = useFieldArray({ control, name: "actions" });
 
   const { userLabels, isLoading, mutate: mutateLabels } = useLabels();
-  const {
-    categories,
-    isLoading: categoriesLoading,
-    error: categoriesError,
-  } = useCategories();
-  const { folders, isLoading: foldersLoading } = useFolders();
+  const { data: messagingChannelsData } = useMessagingChannels(emailAccountId);
+  const { folders, isLoading: foldersLoading } = useFolders(provider);
   const router = useRouter();
 
   const posthog = usePostHog();
+  const [attachmentSources, setAttachmentSources] = useState<
+    AttachmentSourceInput[]
+  >(
+    rule.attachmentSources?.map((source) => ({
+      driveConnectionId: source.driveConnectionId,
+      name: source.name,
+      sourceId: source.sourceId,
+      sourcePath: source.sourcePath,
+      type: source.type,
+    })) || [],
+  );
 
   const onSubmit: SubmitHandler<CreateRuleBody> = useCallback(
     async (data) => {
-      // create labels that don't exist
-      for (const action of data.actions) {
-        if (action.type === ActionType.LABEL) {
-          const hasLabel = userLabels?.some(
-            (label) => label.name === action.label,
-          );
-          if (!hasLabel && action.label?.value && !action.label?.ai) {
-            await createLabelAction(emailAccountId, {
-              name: action.label.value,
-            });
-          }
-        }
-      }
-
       // set content to empty string if it's not set manually
       for (const action of data.actions) {
-        if (action.type === ActionType.DRAFT_EMAIL) {
+        if (isDraftReplyActionType(action.type)) {
           if (!action.content?.setManually) {
             action.content = { value: "", ai: false };
           }
         }
       }
 
-      // Add DIGEST action if digest is enabled
-      const actionsToSubmit = [...data.actions];
-      if (data.digest) {
-        actionsToSubmit.push({ type: ActionType.DIGEST });
+      const normalizedActions = denormalizeDraftReplyActions(data.actions);
+
+      const hasDraftAction = normalizedActions.some((action) =>
+        isDraftReplyActionType(action.type),
+      );
+
+      // When the user lacks digest access the toggle is hidden, so preserve
+      // any existing DIGEST action rather than silently dropping it.
+      const actionsToSubmit = [...normalizedActions];
+      const existingDigestAction = rule.actions.find(
+        (action) => action.type === ActionType.DIGEST,
+      );
+      const includeDigestAction = hasDigestAccess
+        ? data.digest
+        : !!existingDigestAction;
+      if (includeDigestAction) {
+        actionsToSubmit.push({
+          id: existingDigestAction?.id,
+          type: ActionType.DIGEST,
+        });
+      }
+
+      // Add NOTIFY_MESSAGING_CHANNEL action if a channel is selected
+      if (data.notifyMessagingChannelId) {
+        const existingNotifyAction = rule.actions.find(
+          (action) => action.type === ActionType.NOTIFY_MESSAGING_CHANNEL,
+        );
+
+        actionsToSubmit.push({
+          id: existingNotifyAction?.id,
+          type: ActionType.NOTIFY_MESSAGING_CHANNEL,
+          messagingChannelId: data.notifyMessagingChannelId,
+        });
       }
 
       if (data.id) {
+        const orderedActionsToSubmit = restorePersistedActionSequence({
+          actions: actionsToSubmit,
+          originalActions: rule.actions,
+        });
+
         if (mutate) {
           // mutate delayInMinutes optimistically to keep the UI consistent
           // in case the modal is reopened immediately after saving
@@ -249,7 +291,7 @@ export function RuleForm({
 
         const res = await updateRuleAction(emailAccountId, {
           ...data,
-          actions: actionsToSubmit,
+          actions: orderedActionsToSubmit,
           id: data.id,
         });
 
@@ -263,13 +305,21 @@ export function RuleForm({
           });
           if (mutate) mutate();
         } else {
-          toastSuccess({ description: "Saved!" });
+          await handleRuleAttachmentSourceSave({
+            emailAccountId,
+            ruleId: res.data.rule.id,
+            attachmentSources,
+            shouldSave: hasDraftAction,
+            successMessage: "Saved!",
+            partialErrorMessage:
+              "Rule saved, but draft attachment sources could not be updated.",
+          });
+
           // Revalidate to get the real data from server
           if (mutate) mutate();
           posthog.capture("User updated AI rule", {
             conditions: data.conditions.map((condition) => condition.type),
-            actions: actionsToSubmit.map((action) => action.type),
-            automate: data.automate,
+            actions: orderedActionsToSubmit.map((action) => action.type),
             runOnThreads: data.runOnThreads,
             digest: data.digest,
           });
@@ -293,11 +343,19 @@ export function RuleForm({
             description: "There was an error creating the rule.",
           });
         } else {
-          toastSuccess({ description: "Created!" });
+          await handleRuleAttachmentSourceSave({
+            emailAccountId,
+            ruleId: res.data.rule.id,
+            attachmentSources,
+            shouldSave: hasDraftAction,
+            successMessage: "Created!",
+            partialErrorMessage:
+              "Rule created, but draft attachment sources could not be saved.",
+          });
+
           posthog.capture("User created AI rule", {
             conditions: data.conditions.map((condition) => condition.type),
             actions: actionsToSubmit.map((action) => action.type),
-            automate: data.automate,
             runOnThreads: data.runOnThreads,
             digest: data.digest,
           });
@@ -305,18 +363,15 @@ export function RuleForm({
             onSuccess();
           } else {
             router.replace(
-              prefixPath(
-                emailAccountId,
-                `/assistant?tab=rule&ruleId=${res.data.rule.id}`,
-              ),
+              prefixPath(emailAccountId, `/assistant/rule/${res.data.rule.id}`),
             );
-            router.push(prefixPath(emailAccountId, "/assistant?tab=rules"));
+            router.push(prefixPath(emailAccountId, "/automation?tab=rules"));
           }
         }
       }
     },
     [
-      userLabels,
+      attachmentSources,
       router,
       posthog,
       emailAccountId,
@@ -324,16 +379,11 @@ export function RuleForm({
       onSuccess,
       mutate,
       rule,
+      hasDigestAccess,
     ],
   );
 
   const conditions = watch("conditions");
-  const unusedCondition = useMemo(() => {
-    const usedConditions = new Set(conditions?.map(({ type }) => type));
-    return [ConditionType.AI, ConditionType.STATIC].find(
-      (type) => !usedConditions.has(type),
-    ) as CoreConditionType | undefined;
-  }, [conditions]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: needed
   useEffect(() => {
@@ -344,52 +394,47 @@ export function RuleForm({
     const actionErrors: string[] = [];
     watch("actions")?.forEach((_, index) => {
       const actionError =
-        errors?.actions?.[index]?.url?.root?.message ||
-        errors?.actions?.[index]?.label?.root?.message ||
-        errors?.actions?.[index]?.to?.root?.message;
+        formState.errors?.actions?.[index]?.url?.root?.message ||
+        formState.errors?.actions?.[index]?.labelId?.root?.message ||
+        formState.errors?.actions?.[index]?.to?.root?.message ||
+        formState.errors?.actions?.[index]?.messagingChannelId?.message;
       if (actionError) actionErrors.push(actionError);
     });
     return actionErrors;
-  }, [errors, watch]);
+  }, [formState, watch]);
 
   const conditionalOperator = watch("conditionalOperator");
   const terminology = getEmailTerminology(provider);
+  const existingActionTypes = useMemo(
+    () => ruleEditorActions.map((action) => action.type),
+    [ruleEditorActions],
+  );
 
-  const typeOptions = useMemo(() => {
-    const options: { label: string; value: ActionType }[] = [
-      { label: "Archive", value: ActionType.ARCHIVE },
-      { label: terminology.label.action, value: ActionType.LABEL },
-      ...(isMicrosoftProvider(provider)
-        ? [{ label: "Move to folder", value: ActionType.MOVE_FOLDER }]
-        : []),
-      { label: "Draft reply", value: ActionType.DRAFT_EMAIL },
-      { label: "Reply", value: ActionType.REPLY },
-      { label: "Send email", value: ActionType.SEND_EMAIL },
-      { label: "Forward", value: ActionType.FORWARD },
-      { label: "Mark read", value: ActionType.MARK_READ },
-      { label: "Mark spam", value: ActionType.MARK_SPAM },
-      { label: "Call webhook", value: ActionType.CALL_WEBHOOK },
-    ];
+  const formErrors = useMemo(
+    () =>
+      Object.values(formState.errors)
+        .filter((error): error is { message: string } => Boolean(error.message))
+        .map((error) => error.message),
+    [formState],
+  );
 
-    return options;
-  }, [provider, terminology.label.action]);
+  const typeOptions = useMemo(
+    () =>
+      getRuleActionTypeOptions({
+        provider,
+        labelActionText: terminology.label.action,
+        systemType: rule.systemType,
+        existingActionTypes,
+      }).map((option) => ({
+        ...option,
+        icon: getActionIcon(option.value),
+      })),
+    [existingActionTypes, provider, terminology.label.action, rule.systemType],
+  );
 
   const [isNameEditMode, setIsNameEditMode] = useState(alwaysEditMode);
-  const [isConditionsEditMode, setIsConditionsEditMode] =
-    useState(alwaysEditMode);
-  const [isActionsEditMode, setIsActionsEditMode] = useState(alwaysEditMode);
-
-  const toggleActionsEditMode = useCallback(() => {
-    if (!alwaysEditMode) {
-      setIsActionsEditMode((prev: boolean) => !prev);
-    }
-  }, [alwaysEditMode]);
-
-  const toggleConditionsEditMode = useCallback(() => {
-    if (!alwaysEditMode) {
-      setIsConditionsEditMode((prev: boolean) => !prev);
-    }
-  }, [alwaysEditMode]);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
 
   const toggleNameEditMode = useCallback(() => {
     if (!alwaysEditMode) {
@@ -399,15 +444,15 @@ export function RuleForm({
 
   return (
     <Form {...form}>
-      <form onSubmit={handleSubmit(onSubmit)}>
-        {isSubmitted && Object.keys(errors).length > 0 && (
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-10">
+        {isSubmitted && formErrors.length > 0 && (
           <div className="mt-4">
             <AlertError
               title="Error"
               description={
                 <ul className="list-disc">
-                  {Object.values(errors).map((error) => (
-                    <li key={error.message}>{error.message}</li>
+                  {formErrors.map((message) => (
+                    <li key={message}>{message}</li>
                   ))}
                 </ul>
               }
@@ -415,7 +460,7 @@ export function RuleForm({
           </div>
         )}
 
-        <div className="mt-4">
+        <div>
           {isNameEditMode ? (
             <Input
               type="text"
@@ -436,573 +481,255 @@ export function RuleForm({
           )}
         </div>
 
-        <div className="mt-4 flex items-end justify-between">
-          <TypographyH3 className="text-xl">Conditions</TypographyH3>
-
-          <div className="flex items-center gap-1.5">
-            {isConditionsEditMode && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm">
-                    <FilterIcon className="mr-2 h-4 w-4" />
-                    Match{" "}
-                    {!conditionalOperator ||
-                    conditionalOperator === LogicalOperator.AND
-                      ? "all"
-                      : "any"}
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent>
-                  <DropdownMenuRadioGroup
-                    value={conditionalOperator}
-                    onValueChange={(value) =>
-                      setValue("conditionalOperator", value as LogicalOperator)
-                    }
-                  >
-                    <DropdownMenuRadioItem value={LogicalOperator.AND}>
-                      Match all conditions
-                    </DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value={LogicalOperator.OR}>
-                      Match any condition
-                    </DropdownMenuRadioItem>
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-
-            {!alwaysEditMode && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={toggleConditionsEditMode}
-                Icon={!isConditionsEditMode ? PencilIcon : undefined}
-              >
-                {isConditionsEditMode ? "View" : "Edit"}
-              </Button>
-            )}
-          </div>
-        </div>
-
-        {errors.conditions?.root?.message && (
-          <div className="mt-2">
-            <AlertError
-              title="Error"
-              description={errors.conditions.root.message}
-            />
-          </div>
-        )}
-
-        <div className="mt-2">
-          {conditionFields.map((condition, index) => (
-            <div key={condition.id}>
-              {index > 0 && (
-                <div className="flex items-center justify-center py-3">
-                  <div className="flex items-center gap-3">
-                    <div className="h-px w-12 bg-border" />
-                    <div className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">
-                      {conditionalOperator === LogicalOperator.OR
-                        ? "OR"
-                        : "AND"}
-                    </div>
-                    <div className="h-px w-12 bg-border" />
-                  </div>
-                </div>
-              )}
-              {isConditionsEditMode ? (
-                <CardBasic className="relative">
-                  <RemoveButton
-                    onClick={() => removeCondition(index)}
-                    ariaLabel="Remove condition"
-                  />
-                  <CardLayout>
-                    <CardLayoutLeft>
-                      <FormField
-                        control={control}
-                        name={`conditions.${index}.type`}
-                        render={({ field }) => (
-                          <FormItem>
-                            <Select
-                              onValueChange={(value) => {
-                                const selectedType = value;
-
-                                // check if we have duplicate condition types
-                                const prospectiveTypes = new Set(
-                                  conditions.map((c, idx) =>
-                                    idx === index ? selectedType : c.type,
-                                  ),
-                                );
-
-                                if (
-                                  prospectiveTypes.size !== conditions.length
-                                ) {
-                                  toastError({
-                                    description:
-                                      "You can only have one condition of each type.",
-                                  });
-                                  return; // abort update
-                                }
-
-                                const emptyCondition = getEmptyCondition(
-                                  selectedType as CoreConditionType,
-                                );
-                                if (emptyCondition) {
-                                  setValue(
-                                    `conditions.${index}`,
-                                    emptyCondition,
-                                  );
-                                }
-                              }}
-                              value={field.value}
-                            >
-                              <FormControl>
-                                <SelectTrigger className="w-[180px]">
-                                  <SelectValue />
-                                </SelectTrigger>
-                              </FormControl>
-                              <SelectContent>
-                                {[
-                                  { label: "AI", value: ConditionType.AI },
-                                  {
-                                    label: "Static",
-                                    value: ConditionType.STATIC,
-                                  },
-                                  // Deprecated: only show if this is the selected condition type
-                                  condition.type === ConditionType.CATEGORY
-                                    ? {
-                                        label: "Sender Category",
-                                        value: ConditionType.CATEGORY,
-                                      }
-                                    : null,
-                                ]
-                                  .filter(isDefined)
-                                  .map((option) => (
-                                    <SelectItem
-                                      key={option.value}
-                                      value={option.value}
-                                    >
-                                      {option.label}
-                                    </SelectItem>
-                                  ))}
-                              </SelectContent>
-                            </Select>
-                          </FormItem>
-                        )}
-                      />
-                    </CardLayoutLeft>
-
-                    <CardLayoutRight>
-                      {watch(`conditions.${index}.type`) ===
-                        ConditionType.AI && (
-                        <Input
-                          type="text"
-                          autosizeTextarea
-                          rows={3}
-                          name={`conditions.${index}.instructions`}
-                          label="Instructions"
-                          registerProps={register(
-                            `conditions.${index}.instructions`,
-                          )}
-                          error={
-                            (
-                              errors.conditions?.[index] as {
-                                instructions?: FieldError;
-                              }
-                            )?.instructions
-                          }
-                          placeholder='e.g. Apply this rule to all "receipts"'
-                          tooltipText="The instructions that will be passed to the AI."
-                        />
-                      )}
-
-                      {watch(`conditions.${index}.type`) ===
-                        ConditionType.STATIC && (
-                        <>
-                          <Input
-                            type="text"
-                            name={`conditions.${index}.from`}
-                            label="From"
-                            registerProps={register(`conditions.${index}.from`)}
-                            error={
-                              (
-                                errors.conditions?.[index] as {
-                                  from?: FieldError;
-                                }
-                              )?.from
-                            }
-                            tooltipText="Only apply this rule to emails from this address. e.g. @company.com, or hello@company.com"
-                          />
-                          <Input
-                            type="text"
-                            name={`conditions.${index}.to`}
-                            label="To"
-                            registerProps={register(`conditions.${index}.to`)}
-                            error={
-                              (
-                                errors.conditions?.[index] as {
-                                  to?: FieldError;
-                                }
-                              )?.to
-                            }
-                            tooltipText="Only apply this rule to emails sent to this address. e.g. @company.com, or hello@company.com"
-                          />
-                          <Input
-                            type="text"
-                            name={`conditions.${index}.subject`}
-                            label="Subject"
-                            registerProps={register(
-                              `conditions.${index}.subject`,
-                            )}
-                            error={
-                              (
-                                errors.conditions?.[index] as {
-                                  subject?: FieldError;
-                                }
-                              )?.subject
-                            }
-                            tooltipText="Only apply this rule to emails with this subject. e.g. Receipt for your purchase"
-                          />
-                        </>
-                      )}
-
-                      {watch(`conditions.${index}.type`) ===
-                        ConditionType.CATEGORY && (
-                        <>
-                          <div className="flex items-center gap-4">
-                            <RadioGroup
-                              defaultValue={CategoryFilterType.INCLUDE}
-                              value={
-                                watch(
-                                  `conditions.${index}.categoryFilterType`,
-                                ) || undefined
-                              }
-                              onValueChange={(value) =>
-                                setValue(
-                                  `conditions.${index}.categoryFilterType`,
-                                  value as CategoryFilterType,
-                                )
-                              }
-                              className="flex gap-6"
-                            >
-                              <div className="flex items-center space-x-2">
-                                <RadioGroupItem
-                                  value={CategoryFilterType.INCLUDE}
-                                  id="include"
-                                />
-                                <Label name="include" label="Match" />
-                              </div>
-                              <div className="flex items-center space-x-2">
-                                <RadioGroupItem
-                                  value={CategoryFilterType.EXCLUDE}
-                                  id="exclude"
-                                />
-                                <Label name="exclude" label="Skip" />
-                              </div>
-                            </RadioGroup>
-
-                            <TooltipExplanation text="This stops the AI from applying this rule to emails that don't match your criteria." />
-                          </div>
-
-                          <LoadingContent
-                            loading={categoriesLoading}
-                            error={categoriesError}
-                          >
-                            {categories.length ? (
-                              <>
-                                <MultiSelectFilter
-                                  title="Categories"
-                                  maxDisplayedValues={8}
-                                  options={categories.map((category) => ({
-                                    label: capitalCase(category.name),
-                                    value: category.id,
-                                  }))}
-                                  selectedValues={
-                                    new Set(
-                                      watch(
-                                        `conditions.${index}.categoryFilters`,
-                                      ),
-                                    )
-                                  }
-                                  setSelectedValues={(selectedValues) => {
-                                    setValue(
-                                      `conditions.${index}.categoryFilters`,
-                                      Array.from(selectedValues),
-                                    );
-                                  }}
-                                />
-                                {(
-                                  errors.conditions?.[index] as {
-                                    categoryFilters?: { message?: string };
-                                  }
-                                )?.categoryFilters?.message && (
-                                  <ErrorMessage
-                                    message={
-                                      (
-                                        errors.conditions?.[index] as {
-                                          categoryFilters?: {
-                                            message?: string;
-                                          };
-                                        }
-                                      )?.categoryFilters?.message || ""
-                                    }
-                                  />
-                                )}
-
-                                <Button
-                                  asChild
-                                  variant="ghost"
-                                  size="sm"
-                                  className="ml-2"
-                                >
-                                  <Link
-                                    href={prefixPath(
-                                      emailAccountId,
-                                      "/smart-categories/setup",
-                                    )}
-                                    target="_blank"
-                                  >
-                                    Create category
-                                    <ExternalLinkIcon className="ml-1.5 size-4" />
-                                  </Link>
-                                </Button>
-                              </>
-                            ) : (
-                              <div>
-                                <SectionDescription>
-                                  No sender categories found.
-                                </SectionDescription>
-
-                                <Button asChild className="mt-1">
-                                  <Link
-                                    href={prefixPath(
-                                      emailAccountId,
-                                      "/smart-categories",
-                                    )}
-                                    target="_blank"
-                                  >
-                                    Set up Sender Categories
-                                    <ExternalLinkIcon className="ml-1.5 size-4" />
-                                  </Link>
-                                </Button>
-                              </div>
-                            )}
-                          </LoadingContent>
-                        </>
-                      )}
-                    </CardLayoutRight>
-                  </CardLayout>
-                </CardBasic>
-              ) : (
-                <ConditionSummaryCard
-                  condition={watch(`conditions.${index}`)}
-                  categories={categories}
-                />
-              )}
-            </div>
-          ))}
-        </div>
-
-        {isConditionsEditMode && unusedCondition && (
-          <div className="mt-4">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                appendCondition(getEmptyCondition(unusedCondition));
-                setIsConditionsEditMode(true);
-              }}
-            >
-              <PlusIcon className="mr-2 h-4 w-4" />
-              Add Condition
-            </Button>
-          </div>
-        )}
-
-        <div className="mt-4 flex items-center justify-between">
-          <TypographyH3 className="text-xl">Actions</TypographyH3>
-          {!alwaysEditMode && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={toggleActionsEditMode}
-              Icon={!isActionsEditMode ? PencilIcon : undefined}
-            >
-              {isActionsEditMode ? "View" : "Edit"}
-            </Button>
-          )}
-        </div>
-
-        {actionErrors.length > 0 && (
-          <div className="mt-2">
-            <AlertError
-              title="Error"
-              description={
-                <ul className="list-inside list-disc">
-                  {actionErrors.map((error, index) => (
-                    <li key={`action-${index}`}>{error}</li>
-                  ))}
-                </ul>
-              }
-            />
-          </div>
-        )}
-
-        <div className="mt-2 space-y-4">
-          {watch("actions")?.map((action, i) =>
-            isActionsEditMode ? (
-              <ActionCard
-                key={i}
-                action={action}
-                index={i}
-                register={register}
-                watch={watch}
-                setValue={setValue}
-                control={control}
-                errors={errors}
-                userLabels={userLabels}
-                isLoading={isLoading}
-                mutate={mutateLabels}
-                emailAccountId={emailAccountId}
-                remove={remove}
-                typeOptions={typeOptions}
-                folders={folders}
-                foldersLoading={foldersLoading}
+        <RuleSectionCard
+          icon={InboxIcon}
+          color="blue"
+          title="When I get an email"
+          className="!mt-6"
+          errors={
+            errors.conditions?.root?.message ? (
+              <AlertError
+                title="Error"
+                description={errors.conditions.root.message}
               />
-            ) : (
-              <ActionSummaryCard
-                key={i}
-                action={action}
-                typeOptions={typeOptions}
-                provider={provider}
-              />
-            ),
-          )}
-        </div>
+            ) : undefined
+          }
+        >
+          <ConditionSteps
+            conditionFields={conditionFields}
+            conditionalOperator={conditionalOperator}
+            removeCondition={removeCondition}
+            watch={watch}
+            setValue={setValue}
+            register={register}
+            errors={errors}
+            conditions={conditions}
+            ruleSystemType={rule.systemType}
+            appendCondition={appendCondition}
+          />
+        </RuleSectionCard>
 
-        {isActionsEditMode && (
-          <div className="mt-4">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                append({ type: ActionType.LABEL });
-                setIsActionsEditMode(true);
-              }}
-            >
-              <PlusIcon className="mr-2 size-4" />
-              Add Action
-            </Button>
-          </div>
-        )}
-
-        <div className="space-y-4 mt-8">
-          <TypographyH3 className="text-xl">Settings</TypographyH3>
-
-          <div className="flex items-center space-x-2">
-            <Toggle
-              name="automate"
-              labelRight="Automate"
-              enabled={watch("automate") || false}
-              onChange={(enabled) => {
-                setValue("automate", enabled);
-              }}
-            />
-
-            <TooltipExplanation
-              size="md"
-              side="right"
-              text="When enabled our AI will perform actions automatically. If disabled, you will have to confirm actions first."
-            />
-          </div>
-
-          <div className="flex items-center space-x-2">
-            <Toggle
-              name="runOnThreads"
-              labelRight="Apply to threads"
-              enabled={watch("runOnThreads") || false}
-              onChange={(enabled) => {
-                setValue("runOnThreads", enabled);
-              }}
-            />
-
-            <ThreadsExplanation size="md" />
-          </div>
-
-          <div className="flex items-center space-x-2">
-            <Toggle
-              name="digest"
-              labelRight="Include in daily digest"
-              enabled={watch("digest") || false}
-              onChange={(enabled) => {
-                setValue("digest", enabled);
-              }}
-            />
-
-            <TooltipExplanation
-              size="md"
-              side="right"
-              text="When enabled you will receive a summary of the emails that match this rule in your digest email."
-            />
-          </div>
-
-          {!!rule.id && (
-            <div className="flex">
-              <LearnedPatternsDialog
-                ruleId={rule.id}
-                groupId={rule.groupId || null}
-              />
-            </div>
-          )}
-
-          {rule.id && (
-            <Button
-              size="sm"
-              variant="outline"
-              Icon={TrashIcon}
-              onClick={async () => {
-                const yes = confirm(
-                  "Are you sure you want to delete this rule?",
-                );
-                if (yes) {
-                  try {
-                    const result = await deleteRuleAction(emailAccountId, {
-                      id: rule.id!,
-                    });
-                    if (result?.serverError) {
-                      toastError({
-                        description: result.serverError,
-                      });
-                    } else {
-                      toastSuccess({
-                        description: "The rule has been deleted.",
-                      });
-                      router.push(
-                        prefixPath(emailAccountId, "/automation?tab=rules"),
-                      );
-                    }
-                  } catch {
-                    toastError({ description: "Failed to delete rule." });
-                  }
+        <RuleSectionCard
+          icon={ZapIcon}
+          color="green"
+          title="Then"
+          errors={
+            actionErrors.length > 0 ? (
+              <AlertError
+                title="Error"
+                description={
+                  <ul className="list-inside list-disc">
+                    {actionErrors.map((error, index) => (
+                      <li key={`action-${index}`}>{error}</li>
+                    ))}
+                  </ul>
                 }
-              }}
-            >
-              Delete
-            </Button>
-          )}
-        </div>
+              />
+            ) : undefined
+          }
+        >
+          <ActionSteps
+            actionFields={actionFields}
+            register={register}
+            watch={watch}
+            setValue={setValue}
+            append={append}
+            remove={remove}
+            replaceActions={replace}
+            control={control}
+            errors={errors}
+            userLabels={userLabels}
+            isLoading={isLoading}
+            mutate={mutateLabels}
+            emailAccountId={emailAccountId}
+            typeOptions={typeOptions}
+            folders={folders}
+            foldersLoading={foldersLoading}
+            messagingChannels={messagingChannelsData?.channels ?? []}
+            availableMessagingProviders={
+              messagingChannelsData?.availableProviders ?? []
+            }
+            attachmentSources={attachmentSources}
+            onAttachmentSourcesChange={setAttachmentSources}
+          />
+        </RuleSectionCard>
 
-        <div className="flex justify-end space-x-2 pt-6">
+        <Collapsible open={isAdvancedOpen} onOpenChange={setIsAdvancedOpen}>
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 py-2 text-sm font-medium text-left text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <ChevronRightIcon
+                className={cn(
+                  "size-4 transition-transform",
+                  isAdvancedOpen && "rotate-90",
+                )}
+              />
+              Advanced options
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            {isAdvancedOpen ? (
+              <div className="rounded-md border divide-y">
+                <AdvancedRow
+                  title="Apply to threads"
+                  description="Run on every reply in a conversation, not just the first message."
+                >
+                  <Tooltip
+                    content="This can't be changed for this rule type."
+                    hide={allowMultipleConditions(rule.systemType)}
+                  >
+                    <span>
+                      <Toggle
+                        name="runOnThreads"
+                        enabled={watch("runOnThreads") || false}
+                        onChange={(enabled) => {
+                          setValue("runOnThreads", enabled);
+                        }}
+                        disabled={!allowMultipleConditions(rule.systemType)}
+                      />
+                    </span>
+                  </Tooltip>
+                </AdvancedRow>
+
+                {env.NEXT_PUBLIC_DIGEST_ENABLED && (
+                  <AdvancedRow
+                    title="Include in digest"
+                    description="Show matched emails in your digest summary."
+                  >
+                    {isLoadingPremium ? null : hasDigestAccess ? (
+                      <Toggle
+                        name="digest"
+                        enabled={watch("digest") || false}
+                        onChange={(enabled) => {
+                          setValue("digest", enabled);
+                        }}
+                      />
+                    ) : (
+                      <UpgradeToPlusButton tooltip="Upgrade to the Plus plan to include emails in your digest." />
+                    )}
+                  </AdvancedRow>
+                )}
+
+                <NotifyChannelRow
+                  channels={messagingChannelsData?.channels ?? []}
+                  availableProviders={
+                    messagingChannelsData?.availableProviders ?? []
+                  }
+                  emailAccountId={emailAccountId}
+                  value={watch("notifyMessagingChannelId") ?? null}
+                  onChange={(channelId) => {
+                    setValue("notifyMessagingChannelId", channelId);
+                  }}
+                  hasDraftToChat={watch("actions")?.some(
+                    (action) =>
+                      action.type === ActionType.DRAFT_MESSAGING_CHANNEL,
+                  )}
+                />
+
+                {!!rule.id && (
+                  <AdvancedRow
+                    title="Learned patterns"
+                    description="Patterns inferred from your corrections."
+                  >
+                    <Tooltip
+                      content="Learned patterns aren't available for this rule type."
+                      hide={!isConversationStatusType(rule.systemType)}
+                    >
+                      <span>
+                        <LearnedPatternsDialog
+                          ruleId={rule.id}
+                          groupId={rule.groupId || null}
+                          disabled={isConversationStatusType(rule.systemType)}
+                          label="View"
+                        />
+                      </span>
+                    </Tooltip>
+                  </AdvancedRow>
+                )}
+
+                {rule.id && !rule.systemType && (
+                  <AdvancedRow
+                    title="Delete rule"
+                    description="Permanently remove this rule."
+                  >
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      Icon={TrashIcon}
+                      loading={isDeleting}
+                      disabled={isSubmitting}
+                      onClick={async () => {
+                        const yes = confirm(
+                          "Are you sure you want to delete this rule?",
+                        );
+                        if (yes) {
+                          try {
+                            setIsDeleting(true);
+                            const result = await deleteRuleAction(
+                              emailAccountId,
+                              {
+                                id: rule.id!,
+                              },
+                            );
+                            if (result?.serverError) {
+                              toastError({
+                                description: result.serverError,
+                              });
+                            } else {
+                              toastSuccess({
+                                description: "The rule has been deleted.",
+                              });
+
+                              if (isDialog && onSuccess) {
+                                onSuccess();
+                              }
+
+                              router.push(
+                                prefixPath(
+                                  emailAccountId,
+                                  "/automation?tab=rules",
+                                ),
+                              );
+                            }
+                          } catch {
+                            toastError({
+                              description: "Failed to delete rule.",
+                            });
+                          } finally {
+                            setIsDeleting(false);
+                          }
+                        }
+                      }}
+                    >
+                      Delete
+                    </Button>
+                  </AdvancedRow>
+                )}
+              </div>
+            ) : null}
+          </CollapsibleContent>
+        </Collapsible>
+
+        <div className="flex justify-end space-x-2 !mt-6">
           {onCancel && (
-            <Button variant="outline" onClick={onCancel}>
+            <Button variant="outline" size="sm" onClick={onCancel}>
               Cancel
             </Button>
           )}
 
           {rule.id ? (
-            <Button type="submit" loading={isSubmitting}>
+            <Button
+              type="submit"
+              size="sm"
+              loading={isSubmitting}
+              disabled={isDeleting}
+            >
               Save
             </Button>
           ) : (
-            <Button type="submit" loading={isSubmitting}>
+            <Button type="submit" size="sm" loading={isSubmitting}>
               Create
             </Button>
           )}
@@ -1012,684 +739,310 @@ export function RuleForm({
   );
 }
 
-function ActionCard({
-  action,
-  index,
-  register,
-  watch,
-  setValue,
-  control,
-  errors,
-  userLabels,
-  isLoading,
-  mutate,
+const CONNECT_SENTINEL = "__connect__";
+
+function NotifyChannelRow({
+  channels,
+  availableProviders,
   emailAccountId,
-  remove,
-  typeOptions,
-  folders,
-  foldersLoading,
-}: {
-  action: CreateRuleBody["actions"][number];
-  index: number;
-  register: ReturnType<typeof useForm<CreateRuleBody>>["register"];
-  watch: ReturnType<typeof useForm<CreateRuleBody>>["watch"];
-  setValue: ReturnType<typeof useForm<CreateRuleBody>>["setValue"];
-  control: ReturnType<typeof useForm<CreateRuleBody>>["control"];
-  errors: FieldErrors<CreateRuleBody>;
-  userLabels: EmailLabel[];
-  isLoading: boolean;
-  mutate: () => void;
-  emailAccountId: string;
-  remove: (index: number) => void;
-  typeOptions: { label: string; value: ActionType }[];
-  folders: OutlookFolder[];
-  foldersLoading: boolean;
-}) {
-  const fields = actionInputs[action.type].fields;
-  const [expandedFields, setExpandedFields] = useState(false);
-  const delayedActionsEnabled = useDelayedActionsEnabled();
-
-  // Get expandable fields that should be visible regardless of expanded state
-  const hasExpandableFields = fields.some((field) => field.expandable);
-
-  // Precompute content setManually state
-  const contentSetManually =
-    action.type === ActionType.DRAFT_EMAIL
-      ? !!watch(`actions.${index}.content.setManually`)
-      : false;
-
-  const actionCanBeDelayed = useMemo(
-    () => delayedActionsEnabled && canActionBeDelayed(action.type),
-    [action.type, delayedActionsEnabled],
-  );
-
-  const delayValue = watch(`actions.${index}.delayInMinutes`);
-  const delayEnabled = !!delayValue;
-
-  // Helper function to determine if a field can use variables based on context
-  const canFieldUseVariables = (
-    field: { name: string; expandable?: boolean },
-    isFieldAiGenerated: boolean,
-  ) => {
-    // Check if the field is visible - this is handled before calling the function
-
-    // For label field, only allow variables if AI generated is toggled on
-    if (field.name === "label") {
-      return isFieldAiGenerated;
-    }
-
-    // For draft email content, only allow variables if set manually
-    if (field.name === "content" && action.type === ActionType.DRAFT_EMAIL) {
-      return contentSetManually;
-    }
-
-    if (field.name === "folderName" || field.name === "folderId") {
-      return false;
-    }
-
-    // For other fields, allow variables
-    return true;
-  };
-
-  // Check if we should show the variable pro tip
-  const shouldShowProTip = fields.some((field) => {
-    if (field.name === "folderName" || field.name === "folderId") {
-      return false;
-    }
-
-    // Get field value for zodField objects
-    const value = watch(`actions.${index}.${field.name}.value`);
-    const isFieldVisible = !field.expandable || expandedFields || !!value;
-
-    if (!isFieldVisible) return false;
-
-    // For label field, only show variables if AI generated is toggled on
-    if (field.name === "label") {
-      return !!action[field.name]?.ai;
-    }
-
-    // For draft email content, only show variables if set manually
-    if (field.name === "content" && action.type === ActionType.DRAFT_EMAIL) {
-      return contentSetManually;
-    }
-
-    // For other fields, show if they're visible
-    return true;
-  });
-
-  return (
-    <CardBasic className="relative">
-      <RemoveButton onClick={() => remove(index)} ariaLabel="Remove action" />
-      <CardLayout>
-        <CardLayoutLeft>
-          <FormField
-            control={control}
-            name={`actions.${index}.type`}
-            render={({ field }) => (
-              <FormItem>
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <FormControl>
-                    <SelectTrigger className="w-[180px]">
-                      <SelectValue />
-                    </SelectTrigger>
-                  </FormControl>
-                  <SelectContent>
-                    {typeOptions.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </FormItem>
-            )}
-          />
-        </CardLayoutLeft>
-        <CardLayoutRight>
-          {fields.map((field) => {
-            const isAiGenerated = !!action[field.name]?.ai;
-            const value = watch(`actions.${index}.${field.name}.value`) || "";
-            const setManually = !!watch(
-              `actions.${index}.${field.name}.setManually`,
-            );
-
-            // Show field if it's not expandable, or it's expanded, or it has a value
-            const showField = !field.expandable || expandedFields || !!value;
-
-            if (!showField) return null;
-
-            return (
-              <CardLayoutRight
-                key={field.name}
-                className={field.expandable && !value ? "opacity-80" : ""}
-              >
-                <div>
-                  <Label name={field.name} label={field.label} />
-
-                  {field.name === "label" && !isAiGenerated ? (
-                    <div className="mt-2">
-                      <LabelCombobox
-                        userLabels={userLabels}
-                        isLoading={isLoading}
-                        mutate={mutate}
-                        value={value}
-                        onChangeValue={(newValue: string) => {
-                          setValue(
-                            `actions.${index}.${field.name}.value`,
-                            newValue,
-                          );
-                        }}
-                        emailAccountId={emailAccountId}
-                      />
-                    </div>
-                  ) : field.name === "label" && isAiGenerated ? (
-                    <div className="mt-2">
-                      <Input
-                        type="text"
-                        name={`actions.${index}.${field.name}.value`}
-                        registerProps={register(
-                          `actions.${index}.${field.name}.value`,
-                        )}
-                      />
-                    </div>
-                  ) : field.name === "folderName" &&
-                    action.type === ActionType.MOVE_FOLDER ? (
-                    <div className="mt-2">
-                      <FolderSelector
-                        folders={folders}
-                        isLoading={foldersLoading}
-                        value={{
-                          name:
-                            watch(`actions.${index}.folderName.value`) || "",
-                          id: watch(`actions.${index}.folderId.value`) || "",
-                        }}
-                        onChangeValue={(folderData) => {
-                          if (folderData.name && folderData.id) {
-                            setValue(`actions.${index}.folderName`, {
-                              value: folderData.name,
-                            });
-                            setValue(`actions.${index}.folderId`, {
-                              value: folderData.id,
-                            });
-                          } else {
-                            setValue(`actions.${index}.folderName`, undefined);
-                            setValue(`actions.${index}.folderId`, undefined);
-                          }
-                        }}
-                      />
-                    </div>
-                  ) : field.name === "content" &&
-                    action.type === ActionType.DRAFT_EMAIL &&
-                    !setManually ? (
-                    <div className="mt-2 flex h-full flex-col items-center justify-center gap-2 p-4 border rounded">
-                      <div className="max-w-sm text-center text-sm text-muted-foreground">
-                        Our AI will generate a reply using your knowledge base
-                        and previous conversations with the sender
-                      </div>
-
-                      <Button
-                        variant="link"
-                        size="xs"
-                        onClick={() => {
-                          setValue(
-                            `actions.${index}.content.setManually`,
-                            true,
-                          );
-                        }}
-                      >
-                        Set manually
-                      </Button>
-                    </div>
-                  ) : field.textArea ? (
-                    <div className="mt-2">
-                      <TextareaAutosize
-                        className="block w-full flex-1 whitespace-pre-wrap rounded-md border border-border bg-background shadow-sm focus:border-black focus:ring-black sm:text-sm"
-                        minRows={3}
-                        rows={3}
-                        {...register(`actions.${index}.${field.name}.value`)}
-                      />
-
-                      {field.name === "content" &&
-                        action.type === ActionType.DRAFT_EMAIL &&
-                        setManually && (
-                          <Button
-                            variant="link"
-                            size="xs"
-                            onClick={() => {
-                              setValue(
-                                `actions.${index}.content.setManually`,
-                                false,
-                              );
-                            }}
-                          >
-                            Auto draft
-                          </Button>
-                        )}
-                    </div>
-                  ) : (
-                    <div className="mt-2">
-                      <Input
-                        type="text"
-                        name={`actions.${index}.${field.name}.value`}
-                        registerProps={register(
-                          `actions.${index}.${field.name}.value`,
-                        )}
-                        placeholder={field.placeholder}
-                      />
-                      {field.name === "url" &&
-                        action.type === ActionType.CALL_WEBHOOK && (
-                          <div className="mt-2">
-                            <WebhookDocumentationLink />
-                          </div>
-                        )}
-                    </div>
-                  )}
-
-                  {field.name === "label" && (
-                    <div className="flex items-center space-x-2 mt-4">
-                      <Toggle
-                        name={`actions.${index}.${field.name}.ai`}
-                        labelRight="AI generated"
-                        enabled={isAiGenerated || false}
-                        onChange={(enabled: boolean) => {
-                          setValue(
-                            `actions.${index}.${field.name}`,
-                            enabled
-                              ? { value: "", ai: true }
-                              : { value: "", ai: false },
-                          );
-                        }}
-                      />
-
-                      <TooltipExplanation
-                        side="right"
-                        text="When enabled our AI will generate a value when processing the email. Put the prompt inside braces like so: {{your prompt here}}."
-                      />
-                    </div>
-                  )}
-                </div>
-                {hasVariables(value) &&
-                  canFieldUseVariables(field, isAiGenerated) && (
-                    <div className="mt-2 whitespace-pre-wrap rounded-md bg-muted/50 p-2 font-mono text-sm text-foreground">
-                      {(value || "")
-                        .split(/(\{\{.*?\}\})/g)
-                        .map((part: string, idx: number) =>
-                          part.startsWith("{{") ? (
-                            <span
-                              key={idx}
-                              className="rounded bg-blue-100 px-1 text-blue-500 dark:bg-blue-950 dark:text-blue-400"
-                            >
-                              <sub className="font-sans">AI</sub>
-                              {part}
-                            </span>
-                          ) : (
-                            <span key={idx}>{part}</span>
-                          ),
-                        )}
-                    </div>
-                  )}
-
-                {errors?.actions?.[index]?.[field.name]?.message && (
-                  <ErrorMessage
-                    message={
-                      errors.actions?.[index]?.[
-                        field.name
-                      ]?.message?.toString() || "Invalid value"
-                    }
-                  />
-                )}
-              </CardLayoutRight>
-            );
-          })}
-
-          {action.type === ActionType.TRACK_THREAD && <ReplyTrackerAction />}
-          {shouldShowProTip && <VariableProTip />}
-          {actionCanBeDelayed && (
-            <div className="">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <Toggle
-                    name={`actions.${index}.delayEnabled`}
-                    labelRight="Delay"
-                    enabled={delayEnabled}
-                    onChange={(enabled: boolean) => {
-                      const newValue = enabled ? 60 : null;
-                      setValue(`actions.${index}.delayInMinutes`, newValue, {
-                        shouldValidate: true,
-                      });
-                    }}
-                  />
-                  <TooltipExplanation
-                    text="Delay this action to run later. Perfect for auto-archiving newsletters after you've had time to read them, or cleaning up notifications after a few days."
-                    side="right"
-                  />
-                </div>
-
-                {delayEnabled && (
-                  <DelayInputControls
-                    index={index}
-                    delayInMinutes={delayValue}
-                    setValue={setValue}
-                  />
-                )}
-              </div>
-
-              {errors?.actions?.[index]?.delayInMinutes && (
-                <div className="mt-2">
-                  <ErrorMessage
-                    message={
-                      errors.actions?.[index]?.delayInMinutes?.message ||
-                      "Invalid delay value"
-                    }
-                  />
-                </div>
-              )}
-            </div>
-          )}
-
-          {hasExpandableFields && (
-            <div className="mt-2 flex">
-              <Button
-                size="xs"
-                variant="ghost"
-                className="flex items-center gap-1 text-xs text-muted-foreground"
-                onClick={() => setExpandedFields(!expandedFields)}
-              >
-                {expandedFields ? (
-                  <>
-                    <ChevronDownIcon className="h-3.5 w-3.5" />
-                    Hide extra fields
-                  </>
-                ) : (
-                  <>
-                    <ChevronRightIcon className="h-3.5 w-3.5" />
-                    Show all fields
-                  </>
-                )}
-              </Button>
-            </div>
-          )}
-        </CardLayoutRight>
-      </CardLayout>
-    </CardBasic>
-  );
-}
-
-function CardLayout({ children }: { children: React.ReactNode }) {
-  return <div className="flex flex-col sm:flex-row gap-4">{children}</div>;
-}
-
-function CardLayoutLeft({ children }: { children: React.ReactNode }) {
-  return <div className="w-[200px]">{children}</div>;
-}
-
-function CardLayoutRight({
-  children,
-  className,
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <div className={cn("space-y-4 mx-auto w-full max-w-md", className)}>
-      {children}
-    </div>
-  );
-}
-
-function LabelCombobox({
   value,
-  onChangeValue,
-  userLabels,
-  isLoading,
-  mutate,
-  emailAccountId,
+  onChange,
+  hasDraftToChat,
 }: {
-  value: string;
-  onChangeValue: (value: string) => void;
-  userLabels: EmailLabel[];
-  isLoading: boolean;
-  mutate: () => void;
+  channels: GetMessagingChannelsResponse["channels"];
+  availableProviders: GetMessagingChannelsResponse["availableProviders"];
   emailAccountId: string;
+  value: string | null;
+  onChange: (channelId: string | null) => void;
+  hasDraftToChat?: boolean;
 }) {
-  const [search, setSearch] = useState("");
+  const router = useRouter();
+  const connectedChannels = getConnectedRuleNotificationChannels(channels);
+  const hasChannels = connectedChannels.length > 0;
+  const canConnect = availableProviders.length > 0;
 
-  return (
-    <Combobox
-      options={userLabels.map((label) => ({
-        value: label.name || "",
-        label: label.name || "",
-      }))}
-      value={value}
-      onChangeValue={onChangeValue}
-      search={search}
-      onSearch={setSearch}
-      placeholder="Select a label"
-      emptyText={
-        <div>
-          <div>No labels</div>
-          {search && (
-            <Button
-              className="mt-2"
-              variant="outline"
-              onClick={() => {
-                toast.promise(
-                  async () => {
-                    const res = await createLabelAction(emailAccountId, {
-                      name: search,
-                    });
-                    mutate();
-                    if (res?.serverError) throw new Error(res.serverError);
-                  },
-                  {
-                    loading: `Creating label "${search}"...`,
-                    success: `Created label "${search}"`,
-                    error: (errorMessage) =>
-                      `Error creating label "${search}": ${errorMessage}`,
-                  },
-                );
-              }}
-            >
-              {`Create "${search}" label`}
-            </Button>
-          )}
-        </div>
-      }
-      loading={isLoading}
-    />
-  );
-}
+  if (!hasChannels && !canConnect) return null;
+  const selectedChannelIsConnected =
+    !value || connectedChannels.some((channel) => channel.id === value);
+  const selectValue = selectedChannelIsConnected ? (value ?? "off") : "off";
 
-function ReplyTrackerAction() {
-  return (
-    <div className="flex h-full items-center justify-center">
-      <div className="max-w-sm text-center text-sm text-muted-foreground">
-        This action tracks emails this rule is applied to and removes the{" "}
-        <Badge color="green">{NEEDS_REPLY_LABEL_NAME}</Badge> label after you
-        reply to the email.
-      </div>
-    </div>
-  );
-}
+  const channelsPath = prefixPath(emailAccountId, "/channels");
+  const draftsNote = hasDraftToChat
+    ? "Drafts also go to chat — configured in actions above."
+    : undefined;
 
-export function ThreadsExplanation({ size }: { size: "sm" | "md" }) {
-  return (
-    <TooltipExplanation
-      size={size}
-      side="right"
-      text="When enabled, this rule can apply to the first email and any subsequent replies in a conversation. When disabled, it can only apply to the first email."
-    />
-  );
-}
-
-function VariableExamplesDialog() {
-  return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <Button variant="outline" size="xs" className="ml-auto">
-          See examples
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Variable Examples</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-6 py-4">
-          <div>
-            <h4 className="font-medium">Example: Subject</h4>
-            <div className="mt-2 rounded-md bg-muted p-3">
-              <code className="text-sm">Hi {"{{name}}"}</code>
-            </div>
-          </div>
-
-          <div>
-            <h4 className="font-medium">Example: Email Content</h4>
-            <div className="mt-2 whitespace-pre-wrap rounded-md bg-muted p-3 font-mono text-sm">
-              {`Hi {{name}},
-
-{{answer the question in the email}}
-
-If you'd like to get on a call here's my cal link:
-cal.com/example`}
-            </div>
-          </div>
-          <div>
-            <h4 className="font-medium">Example: Label</h4>
-            <div className="mt-2 whitespace-pre-wrap rounded-md bg-muted p-3 font-mono text-sm">
-              {`{{choose between "p1", "p2", "p3" depending on urgency. "p1" is highest urgency.}}`}
-            </div>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function VariableProTip() {
-  return (
-    <div className="mt-4 rounded-md bg-blue-50 p-3 dark:bg-blue-950/30">
-      <div className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400">
-        <span>
-          ✨ Use {"{{"}variables{"}}"} for personalized content
-        </span>
-        <VariableExamplesDialog />
-      </div>
-    </div>
-  );
-}
-
-function DelayInputControls({
-  index,
-  delayInMinutes,
-  setValue,
-}: {
-  index: number;
-  delayInMinutes: number | null | undefined;
-  setValue: ReturnType<typeof useForm<CreateRuleBody>>["setValue"];
-}) {
-  const { value: displayValue, unit } = getDisplayValueAndUnit(delayInMinutes);
-
-  const handleValueChange = (newValue: string, currentUnit: string) => {
-    const minutes = convertToMinutes(newValue, currentUnit);
-    setValue(`actions.${index}.delayInMinutes`, minutes, {
-      shouldValidate: true,
-    });
-  };
-
-  const handleUnitChange = (newUnit: string) => {
-    if (displayValue) {
-      const minutes = convertToMinutes(displayValue, newUnit);
-      setValue(`actions.${index}.delayInMinutes`, minutes);
-    }
-  };
-
-  const delayConfig = {
-    displayValue,
-    unit,
-    handleValueChange,
-    handleUnitChange,
-  };
-
-  return (
-    <div className="flex items-center space-x-2">
-      <Input
-        name={`delay-${index}`}
-        type="text"
-        placeholder="0"
-        className="w-20"
-        registerProps={{
-          value: delayConfig.displayValue,
-          onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
-            const value = e.target.value.replace(/[^0-9]/g, "");
-            delayConfig.handleValueChange(value, delayConfig.unit);
-          },
-        }}
-      />
-      <Select
-        value={delayConfig.unit}
-        onValueChange={delayConfig.handleUnitChange}
+  if (!hasChannels) {
+    return (
+      <AdvancedRow
+        title="Notify in chat"
+        description="Send a message when this rule matches."
+        note={draftsNote}
       >
-        <SelectTrigger className="w-24">
+        <Button asChild variant="outline" size="sm">
+          <Link href={channelsPath}>Connect</Link>
+        </Button>
+      </AdvancedRow>
+    );
+  }
+
+  const channelsByProvider = new Map<
+    GetMessagingChannelsResponse["channels"][number]["provider"],
+    GetMessagingChannelsResponse["channels"]
+  >();
+  for (const channel of connectedChannels) {
+    const list = channelsByProvider.get(channel.provider) ?? [];
+    list.push(channel);
+    channelsByProvider.set(channel.provider, list);
+  }
+  const showGroups = channelsByProvider.size > 1;
+
+  return (
+    <AdvancedRow
+      title="Notify in chat"
+      description="Send a message when this rule matches."
+      note={draftsNote}
+    >
+      <Select
+        value={selectValue}
+        onValueChange={(next) => {
+          if (next === CONNECT_SENTINEL) {
+            router.push(channelsPath);
+            return;
+          }
+          onChange(next === "off" ? null : next);
+        }}
+      >
+        <SelectTrigger className="w-[220px]">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="minutes">Minutes</SelectItem>
-          <SelectItem value="hours">Hours</SelectItem>
-          <SelectItem value="days">Days</SelectItem>
+          <SelectItem value="off">Off</SelectItem>
+          {showGroups
+            ? Array.from(channelsByProvider.entries()).map(
+                ([provider, providerChannels]) => (
+                  <SelectGroup key={provider}>
+                    <SelectLabel>
+                      {getMessagingProviderName(provider)}
+                    </SelectLabel>
+                    {providerChannels.map((channel) => (
+                      <SelectItem key={channel.id} value={channel.id}>
+                        {formatMessagingDestinationLabel(channel)}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                ),
+              )
+            : connectedChannels.map((channel) => (
+                <SelectItem key={channel.id} value={channel.id}>
+                  {formatMessagingDestinationLabel(channel)}
+                </SelectItem>
+              ))}
+          {canConnect ? (
+            <>
+              <SelectSeparator />
+              <SelectItem value={CONNECT_SENTINEL}>
+                + Connect new channel
+              </SelectItem>
+            </>
+          ) : null}
         </SelectContent>
       </Select>
+    </AdvancedRow>
+  );
+}
+
+function AdvancedRow({
+  title,
+  description,
+  children,
+  note,
+}: {
+  title: string;
+  description: string;
+  children: ReactNode;
+  note?: ReactNode;
+}) {
+  return (
+    <div className="px-4 py-3 space-y-2">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <p className="text-sm font-medium">{title}</p>
+          <p className="text-sm text-muted-foreground">{description}</p>
+        </div>
+        <div className="shrink-0">{children}</div>
+      </div>
+      {note ? <p className="text-xs text-muted-foreground">{note}</p> : null}
     </div>
   );
 }
 
-// minutes to user-friendly UI format
-function getDisplayValueAndUnit(minutes: number | null | undefined) {
-  if (minutes === null || minutes === undefined)
-    return { value: "", unit: "hours" };
-  if (minutes === -1 || minutes <= 0) return { value: "", unit: "hours" };
-
-  if (minutes >= 1440 && minutes % 1440 === 0) {
-    return { value: (minutes / 1440).toString(), unit: "days" };
-  } else if (minutes >= 60 && minutes % 60 === 0) {
-    return { value: (minutes / 60).toString(), unit: "hours" };
-  } else {
-    return { value: minutes.toString(), unit: "minutes" };
-  }
-}
-
-// user-friendly UI format to minutes
-function convertToMinutes(value: string, unit: string) {
-  const numValue = Number.parseInt(value, 10);
-  if (Number.isNaN(numValue) || numValue <= 0) return -1;
-
-  switch (unit) {
-    case "minutes":
-      return numValue;
-    case "hours":
-      return numValue * 60;
-    case "days":
-      return numValue * 1440;
-    default:
-      return numValue;
-  }
-}
-
-function RemoveButton({
-  onClick,
-  ariaLabel,
-}: {
-  onClick: () => void;
-  ariaLabel: string;
-}) {
+function allowMultipleConditions(systemType: SystemType | null | undefined) {
   return (
-    <Button
-      size="icon"
-      variant="ghost"
-      className="absolute top-2 right-2 size-8"
-      onClick={onClick}
-      aria-label={ariaLabel}
-    >
-      <TrashIcon className="size-4" />
-    </Button>
+    systemType !== SystemType.COLD_EMAIL &&
+    !isConversationStatusType(systemType)
   );
+}
+
+function restorePersistedActionSequence({
+  actions,
+  originalActions,
+}: {
+  actions: CreateRuleBody["actions"];
+  originalActions: CreateRuleBody["actions"];
+}) {
+  const originalIndexById = new Map(
+    originalActions.flatMap((action, index) =>
+      action.id ? [[action.id, index] as const] : [],
+    ),
+  );
+
+  if (originalIndexById.size === 0) return actions;
+
+  const existing: CreateRuleBody["actions"] = [];
+  const added: CreateRuleBody["actions"] = [];
+
+  for (const action of actions) {
+    if (action.id && originalIndexById.has(action.id)) {
+      existing.push(action);
+    } else {
+      added.push(action);
+    }
+  }
+
+  if (existing.length === 0) return actions;
+
+  existing.sort(
+    (a, b) =>
+      (originalIndexById.get(a.id ?? "") ?? 0) -
+      (originalIndexById.get(b.id ?? "") ?? 0),
+  );
+
+  return [...existing, ...added];
+}
+
+function getRuleEditorActions(actions: CreateRuleBody["actions"]) {
+  let filteredActions = actions;
+
+  if (env.NEXT_PUBLIC_WEBHOOK_ACTION_ENABLED === false) {
+    filteredActions = filteredActions.filter(
+      (action) => action.type !== ActionType.CALL_WEBHOOK,
+    );
+  }
+
+  return filteredActions;
+}
+
+type ActionTypeOption = {
+  label: string;
+  value: ActionType;
+};
+
+export function getRuleActionTypeOptions({
+  provider,
+  labelActionText,
+  systemType,
+  existingActionTypes,
+}: {
+  provider: string;
+  labelActionText: string;
+  systemType: SystemType | null | undefined;
+  existingActionTypes: ActionType[];
+}): ActionTypeOption[] {
+  const availableActions = new Set(
+    getAvailableActionsForRuleEditor({
+      provider,
+      existingActionTypes,
+    }),
+  );
+  const extraActions = new Set(getExtraAvailableActionsForRuleEditor());
+
+  return [
+    {
+      label: labelActionText,
+      value: ActionType.LABEL,
+    },
+    ...(availableActions.has(ActionType.MOVE_FOLDER)
+      ? [
+          {
+            label: ACTION_TYPE_LABELS[ActionType.MOVE_FOLDER],
+            value: ActionType.MOVE_FOLDER,
+          },
+        ]
+      : []),
+    ...(availableActions.has(ActionType.DRAFT_EMAIL)
+      ? [
+          {
+            label: ACTION_TYPE_LABELS[ActionType.DRAFT_EMAIL],
+            value: ActionType.DRAFT_EMAIL,
+          },
+        ]
+      : []),
+    {
+      label: ACTION_TYPE_LABELS[ActionType.ARCHIVE],
+      value: ActionType.ARCHIVE,
+    },
+    ...(isDeleteEmailActionEnabled() ||
+    existingActionTypes.includes(ActionType.DELETE)
+      ? [
+          {
+            label: ACTION_TYPE_LABELS[ActionType.DELETE],
+            value: ActionType.DELETE,
+          },
+        ]
+      : []),
+    {
+      label: ACTION_TYPE_LABELS[ActionType.MARK_READ],
+      value: ActionType.MARK_READ,
+    },
+    {
+      label: ACTION_TYPE_LABELS[ActionType.STAR],
+      value: ActionType.STAR,
+    },
+    ...(availableActions.has(ActionType.REPLY)
+      ? [
+          {
+            label: ACTION_TYPE_LABELS[ActionType.REPLY],
+            value: ActionType.REPLY,
+          },
+        ]
+      : []),
+    ...(availableActions.has(ActionType.SEND_EMAIL)
+      ? [
+          {
+            label: ACTION_TYPE_LABELS[ActionType.SEND_EMAIL],
+            value: ActionType.SEND_EMAIL,
+          },
+        ]
+      : []),
+    ...(availableActions.has(ActionType.FORWARD)
+      ? [
+          {
+            label: ACTION_TYPE_LABELS[ActionType.FORWARD],
+            value: ActionType.FORWARD,
+          },
+        ]
+      : []),
+    {
+      label: ACTION_TYPE_LABELS[ActionType.MARK_SPAM],
+      value: ActionType.MARK_SPAM,
+    },
+    ...(extraActions.has(ActionType.CALL_WEBHOOK)
+      ? [
+          {
+            label: ACTION_TYPE_LABELS[ActionType.CALL_WEBHOOK],
+            value: ActionType.CALL_WEBHOOK,
+          },
+        ]
+      : []),
+    ...((systemType === SystemType.COLD_EMAIL &&
+      env.NEXT_PUBLIC_IS_RESEND_CONFIGURED) ||
+    existingActionTypes.includes(ActionType.NOTIFY_SENDER)
+      ? [
+          {
+            label: ACTION_TYPE_LABELS[ActionType.NOTIFY_SENDER],
+            value: ActionType.NOTIFY_SENDER,
+          },
+        ]
+      : []),
+  ];
 }

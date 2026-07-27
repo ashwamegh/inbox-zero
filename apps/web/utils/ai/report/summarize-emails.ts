@@ -4,8 +4,8 @@ import { createGenerateObject } from "@/utils/llms";
 import type { EmailForLLM } from "@/utils/types";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
 import { sleep } from "@/utils/sleep";
-import { stringifyEmail } from "@/utils/stringify-email";
-import { getModel } from "@/utils/llms/model";
+import { getModelForUseCase, LlmUseCase } from "@/utils/llms/use-cases";
+import { getEmailListPrompt } from "@/utils/ai/helpers";
 
 const logger = createScopedLogger("email-report-summarize-emails");
 
@@ -76,18 +76,20 @@ For each email, write a **factual summary of 3–5 sentences** that clearly desc
   const prompt = `
 **Input Emails (Batch ${batchNumber} of ${totalBatches}):**
 
-${emails.map((email) => `<email>${stringifyEmail(email, 2000)}</email>`).join("\n")}
+${getEmailListPrompt({ messages: emails, messageMaxLength: 2000 })}
 
 Return the analysis as a JSON array of objects.`;
 
-  logger.trace("Input", { system, prompt });
-
-  const modelOptions = getModel(emailAccount.user, "economy");
+  const modelOptions = getModelForUseCase(
+    emailAccount.user,
+    LlmUseCase.EmailReportSummaryGeneration,
+  );
 
   const generateObject = createGenerateObject({
-    userEmail: emailAccount.email,
+    emailAccount,
     label: "email-report-summary-generation",
     modelOptions,
+    promptHardening: { trust: "untrusted", level: "none" },
   });
 
   const result = await generateObject({
@@ -100,8 +102,6 @@ Return the analysis as a JSON array of objects.`;
         .describe("Summaries of the emails"),
     }),
   });
-
-  logger.trace("Output", { result: result.object.summaries });
 
   return result.object.summaries;
 }

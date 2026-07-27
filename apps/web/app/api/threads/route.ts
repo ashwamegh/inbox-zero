@@ -1,56 +1,68 @@
 import { NextResponse } from "next/server";
 import { withEmailProvider } from "@/utils/middleware";
-import { type ThreadsQuery, threadsQuery } from "@/app/api/threads/validation";
+import { type ThreadsQuery, threadsQuery } from "@/utils/threads/validation";
 import { isDefined } from "@/utils/types";
 import prisma from "@/utils/prisma";
-import { getCategory } from "@/utils/redis/category";
-import { ExecutedRuleStatus } from "@prisma/client";
-import { createScopedLogger } from "@/utils/logger";
 import { isIgnoredSender } from "@/utils/filter-ignored-senders";
 import type { EmailProvider } from "@/utils/email/types";
 
-const logger = createScopedLogger("api/threads");
-
-export const dynamic = "force-dynamic";
-
 export const maxDuration = 30;
 
-export const GET = withEmailProvider(async (request) => {
-  const { emailProvider } = request;
-  const { emailAccountId } = request.auth;
+export const GET = withEmailProvider(
+  "threads",
+  async (request) => {
+    const { emailProvider } = request;
+    const { emailAccountId } = request.auth;
 
-  const { searchParams } = new URL(request.url);
-  const limit = searchParams.get("limit");
-  const fromEmail = searchParams.get("fromEmail");
-  const type = searchParams.get("type");
-  const nextPageToken = searchParams.get("nextPageToken");
-  const q = searchParams.get("q");
-  const labelId = searchParams.get("labelId");
+    const { searchParams } = new URL(request.url);
+    const limit = searchParams.get("limit");
+    const fromEmail = searchParams.get("fromEmail");
+    const type = searchParams.get("type");
+    const nextPageToken = searchParams.get("nextPageToken");
+    const q = searchParams.get("q");
+    const labelId = searchParams.get("labelId");
+    const labelIds = searchParams
+      .getAll("labelIds")
+      .flatMap((value) => value.split(","))
+      .map((labelId) => labelId.trim())
+      .filter(Boolean);
+    const after = searchParams.get("after");
+    const before = searchParams.get("before");
+    const isUnread = searchParams.get("isUnread");
 
-  const query = threadsQuery.parse({
-    limit,
-    fromEmail,
-    type,
-    nextPageToken,
-    q,
-    labelId,
-  });
-
-  try {
-    const threads = await getThreads({
-      query,
-      emailAccountId,
-      emailProvider,
+    const query = threadsQuery.parse({
+      limit,
+      fromEmail,
+      type,
+      nextPageToken,
+      q,
+      labelId,
+      labelIds: labelIds.length ? labelIds : undefined,
+      after,
+      before,
+      isUnread,
     });
-    return NextResponse.json(threads);
-  } catch (error) {
-    logger.error("Error fetching threads", { error, emailAccountId });
-    return NextResponse.json(
-      { error: "Failed to fetch threads" },
-      { status: 500 },
-    );
-  }
-});
+
+    try {
+      const threads = await getThreads({
+        query,
+        emailAccountId,
+        emailProvider,
+      });
+      return NextResponse.json(threads);
+    } catch (error) {
+      request.logger.error("Error fetching threads", {
+        error,
+        emailAccountId,
+      });
+      return NextResponse.json(
+        { error: "Failed to fetch threads" },
+        { status: 500 },
+      );
+    }
+  },
+  { requestTiming: {} },
+);
 
 export type ThreadsResponse = Awaited<ReturnType<typeof getThreads>>;
 
@@ -70,22 +82,26 @@ async function getThreads({
     pageToken: query.nextPageToken || undefined,
   });
 
-  // Get executed rules for these threads
   const threadIds = threads.map((t) => t.id);
   const plans = await prisma.executedRule.findMany({
     where: {
       emailAccountId,
       threadId: { in: threadIds },
-      status: {
-        in: [ExecutedRuleStatus.PENDING, ExecutedRuleStatus.SKIPPED],
-      },
     },
     select: {
       id: true,
       messageId: true,
       threadId: true,
       rule: true,
-      actionItems: true,
+      actionItems: {
+        include: {
+          messagingChannel: {
+            select: {
+              provider: true,
+            },
+          },
+        },
+      },
       status: true,
       reason: true,
     },
@@ -107,7 +123,6 @@ async function getThreads({
         messages: filteredMessages,
         snippet: thread.snippet,
         plan,
-        category: await getCategory({ emailAccountId, threadId: thread.id }),
       };
     }),
   );

@@ -1,20 +1,22 @@
 import { Suspense } from "react";
-import { PremiumAlertWithData } from "@/components/PremiumAlert";
 import { PermissionsCheck } from "@/app/(app)/[emailAccountId]/PermissionsCheck";
 import { GmailProvider } from "@/providers/GmailProvider";
 import { ColdEmailContent } from "@/app/(app)/[emailAccountId]/cold-email-blocker/ColdEmailContent";
+import { PageWrapper } from "@/components/PageWrapper";
+import { PageHeader } from "@/components/PageHeader";
 
 export default function ColdEmailBlockerPage() {
   return (
-    <GmailProvider>
-      <Suspense>
-        <PermissionsCheck />
-        <div className="content-container">
-          <PremiumAlertWithData className="mt-2" />
-        </div>
-
-        <ColdEmailContent isInset />
-      </Suspense>
-    </GmailProvider>
+    <PageWrapper>
+      <PageHeader title="Cold Email Blocker" />
+      <GmailProvider>
+        <Suspense>
+          <PermissionsCheck />
+          <div className="mt-4">
+            <ColdEmailContent />
+          </div>
+        </Suspense>
+      </GmailProvider>
+    </PageWrapper>
   );
 }

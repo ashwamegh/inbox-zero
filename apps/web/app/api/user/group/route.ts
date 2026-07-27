@@ -6,7 +6,7 @@ export type GroupsResponse = Awaited<ReturnType<typeof getGroups>>;
 
 async function getGroups({ emailAccountId }: { emailAccountId: string }) {
   const groups = await prisma.group.findMany({
-    where: { emailAccountId },
+    where: { emailAccountId, rule: { isNot: null } },
     select: {
       id: true,
       name: true,
@@ -17,7 +17,7 @@ async function getGroups({ emailAccountId }: { emailAccountId: string }) {
   return { groups };
 }
 
-export const GET = withEmailAccount(async (request) => {
+export const GET = withEmailAccount("user/group", async (request) => {
   const emailAccountId = request.auth.emailAccountId;
   const result = await getGroups({ emailAccountId });
   return NextResponse.json(result);

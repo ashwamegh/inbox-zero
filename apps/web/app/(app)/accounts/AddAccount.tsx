@@ -1,173 +1,80 @@
 "use client";
 
 import { useState } from "react";
-import { signIn } from "@/utils/auth-client";
-import { Card, CardContent } from "@/components/ui/card";
+import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { toastError } from "@/components/Toast";
 import Image from "next/image";
-import { DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { DialogTitle } from "@/components/ui/dialog";
-import { DialogHeader } from "@/components/ui/dialog";
-import { DialogContent } from "@/components/ui/dialog";
-import { DialogTrigger } from "@/components/ui/dialog";
-import { Dialog } from "@/components/ui/dialog";
-import type { GetAuthLinkUrlResponse } from "@/app/api/google/linking/auth-url/route";
-import type { GetOutlookAuthLinkUrlResponse } from "@/app/api/outlook/linking/auth-url/route";
-import { SCOPES as GMAIL_SCOPES } from "@/utils/gmail/scopes";
+import { MutedText } from "@/components/Typography";
+import { getAccountLinkingUrl } from "@/utils/account-linking";
+import { isGoogleProvider } from "@/utils/email/provider-types";
+import { redirectToSafeUrl } from "@/utils/redirect";
 
-export function AddAccount() {
-  const handleConnectGoogle = async () => {
-    await signIn.social({
-      provider: "google",
-      callbackURL: "/accounts",
-      scopes: [...GMAIL_SCOPES],
-    });
-  };
-
-  const handleMergeGoogle = async () => {
-    const response = await fetch("/api/google/linking/auth-url", {
-      method: "GET",
-      headers: { "Content-Type": "application/json" },
-    });
-
-    const data: GetAuthLinkUrlResponse = await response.json();
-
-    window.location.href = data.url;
-  };
-
-  const handleConnectMicrosoft = async (action: "merge" | "create") => {
-    const response = await fetch(
-      `/api/outlook/linking/auth-url?action=${action}`,
-      {
-        method: "GET",
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-
-    if (!response.ok) {
-      toastError({
-        title: "Error initiating Microsoft link",
-        description: "Please try again or contact support",
-      });
-      return;
-    }
-
-    const data: GetOutlookAuthLinkUrlResponse = await response.json();
-
-    window.location.href = data.url;
-  };
-
-  const handleCreateMicrosoft = () => handleConnectMicrosoft("create");
-  const handleMergeMicrosoft = () => handleConnectMicrosoft("merge");
-
-  return (
-    <Card className="flex items-center justify-center">
-      <CardContent className="flex flex-col items-center gap-4 p-6">
-        <AddEmailAccount
-          name="Google"
-          image="/images/google.svg"
-          handleConnect={handleConnectGoogle}
-          handleMerge={handleMergeGoogle}
-        />
-        <AddEmailAccount
-          name="Microsoft"
-          image="/images/microsoft.svg"
-          handleConnect={handleCreateMicrosoft}
-          handleMerge={handleMergeMicrosoft}
-        />
-      </CardContent>
-    </Card>
-  );
-}
-
-function AddEmailAccount({
-  name,
-  image,
-  handleConnect,
-  handleMerge,
+export function AddAccount({
+  helperText = "You will be billed for each account.",
 }: {
-  name: "Google" | "Microsoft";
-  image: string;
-  handleConnect: () => Promise<void>;
-  handleMerge: () => Promise<void>;
+  helperText?: ReactNode;
 }) {
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [isMerging, setIsMerging] = useState(false);
+  const [isLoadingGoogle, setIsLoadingGoogle] = useState(false);
+  const [isLoadingMicrosoft, setIsLoadingMicrosoft] = useState(false);
 
-  const onConnect = async () => {
-    setIsConnecting(true);
-    try {
-      await handleConnect();
-    } catch (error) {
-      console.error(`Error initiating ${name} link:`, error);
-      toastError({
-        title: `Error initiating ${name} link`,
-        description: "Please try again or contact support",
-      });
-    }
-    setIsConnecting(false);
-  };
-
-  const onMerge = async () => {
-    setIsMerging(true);
+  const handleAddAccount = async (provider: "google" | "microsoft") => {
+    const setLoading = isGoogleProvider(provider)
+      ? setIsLoadingGoogle
+      : setIsLoadingMicrosoft;
+    setLoading(true);
 
     try {
-      await handleMerge();
+      const url = await getAccountLinkingUrl(provider);
+      redirectToSafeUrl(url, { allowExternal: true });
     } catch (error) {
-      console.error(`Error initiating ${name} link:`, error);
+      console.error(`Error initiating ${provider} link:`, error);
       toastError({
-        title: `Error initiating ${name} link`,
+        title: `Error initiating ${isGoogleProvider(provider) ? "Google" : "Microsoft"} link`,
         description: "Please try again or contact support",
       });
+      setLoading(false);
     }
-
-    setIsMerging(false);
   };
 
   return (
-    <Dialog>
-      <DialogTrigger asChild>
+    <div className="flex flex-col items-center justify-center gap-3 min-h-[90px]">
+      <div className="flex items-center gap-2">
         <Button
-          disabled={isConnecting}
           variant="outline"
-          className="mt-auto w-full"
+          className="w-full"
+          onClick={() => handleAddAccount("google")}
+          loading={isLoadingGoogle}
+          disabled={isLoadingGoogle || isLoadingMicrosoft}
         >
-          <Image src={image} alt="" width={24} height={24} unoptimized />
-          <span className="ml-2">
-            {isConnecting ? "Connecting..." : `Add ${name} Account`}
-          </span>
+          <Image
+            src="/images/google.svg"
+            alt=""
+            width={24}
+            height={24}
+            unoptimized
+          />
+          <span className="ml-2">Add Google</span>
         </Button>
-      </DialogTrigger>
-      <DialogContent className="max-w-xl">
-        <DialogHeader>
-          <DialogTitle>Add {name} Account</DialogTitle>
-          <DialogDescription>
-            Does the account you want to add already have an Inbox Zero account?
-            If yes, we'll link it to your current account.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button
-            variant="outline"
-            size="sm"
-            loading={isMerging}
-            disabled={isMerging || isConnecting}
-            onClick={onMerge}
-          >
-            Yes, it's an existing Inbox Zero account
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            loading={isConnecting}
-            disabled={isMerging || isConnecting}
-            onClick={onConnect}
-          >
-            No, it's a new account
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        <Button
+          variant="outline"
+          className="w-full"
+          onClick={() => handleAddAccount("microsoft")}
+          loading={isLoadingMicrosoft}
+          disabled={isLoadingGoogle || isLoadingMicrosoft}
+        >
+          <Image
+            src="/images/microsoft.svg"
+            alt=""
+            width={24}
+            height={24}
+            unoptimized
+          />
+          <span className="ml-2">Add Microsoft</span>
+        </Button>
+      </div>
+
+      <MutedText>{helperText}</MutedText>
+    </div>
   );
 }

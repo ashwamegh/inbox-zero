@@ -3,29 +3,16 @@
 import { createContext, useContext, useMemo } from "react";
 import { useLabels } from "@/hooks/useLabels";
 import { useAccount } from "@/providers/EmailAccountProvider";
+import type { EmailLabel, EmailLabels } from "@/providers/email-label-types";
 import { OUTLOOK_COLOR_MAP } from "@/utils/outlook/label";
 import {
   isGoogleProvider,
   isMicrosoftProvider,
 } from "@/utils/email/provider-types";
 
-export type EmailLabel = {
-  id: string;
-  name: string;
-  type?: string | null;
-  color?: {
-    textColor?: string | null;
-    backgroundColor?: string | null;
-  };
-  labelListVisibility?: string;
-  messageListVisibility?: string;
-};
-
-export type EmailLabels = Record<string, EmailLabel>;
-
 interface Context {
-  userLabels: EmailLabels;
   labelsIsLoading: boolean;
+  userLabels: EmailLabels;
 }
 
 const EmailContext = createContext<Context>({
@@ -35,9 +22,10 @@ const EmailContext = createContext<Context>({
 
 export const useEmail = () => useContext<Context>(EmailContext);
 
+// biome-ignore lint/suspicious/noExplicitAny: existing loose external shape
 function mapLabelColor(provider: string, label: any): EmailLabel["color"] {
   if (!provider) {
-    return undefined;
+    return;
   }
 
   if (isGoogleProvider(provider)) {

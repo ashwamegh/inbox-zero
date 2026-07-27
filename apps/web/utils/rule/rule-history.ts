@@ -1,13 +1,20 @@
 import prisma from "@/utils/prisma";
-import type { RuleWithRelations } from "@/utils/ai/rule/create-prompt-from-rule";
+import type { Prisma } from "@/generated/prisma/client";
+import type { RuleWithRelations } from "@/utils/rule/types";
 
 export type RuleHistoryTrigger =
-  | "ai_update" // AI updates existing rule from prompt changes
-  | "manual_update" // User manually edits existing rule
-  | "ai_creation" // AI creates rule from parsing prompts
-  | "manual_creation" // User manually creates new rule
-  | "system_creation" // System automatically creates rule (e.g., reply tracker)
-  | "system_update"; // System automatically updates rule
+  | "created"
+  | "updated"
+  | "actions_updated"
+  | "conditions_updated"
+  | "instructions_updated"
+  | "enabled_updated"
+  | "run_on_threads_updated";
+
+export const ruleHistoryRuleInclude = {
+  actions: true,
+  group: true,
+} satisfies Prisma.RuleInclude;
 
 /**
  * Creates a complete snapshot of a rule in the RuleHistory table
@@ -32,20 +39,20 @@ export async function createRuleHistory({
   const actionsSnapshot = rule.actions.map((action) => ({
     id: action.id,
     type: action.type,
+    messagingChannelId: action.messagingChannelId,
+    messagingChannelEmailAccountId: action.messagingChannelEmailAccountId,
     label: action.label,
+    labelId: action.labelId,
     subject: action.subject,
     content: action.content,
     to: action.to,
     cc: action.cc,
     bcc: action.bcc,
     url: action.url,
-  }));
-
-  // Serialize category filters to JSON
-  const categoryFiltersSnapshot = rule.categoryFilters?.map((category) => ({
-    id: category.id,
-    name: category.name,
-    description: category.description,
+    folderName: action.folderName,
+    folderId: action.folderId,
+    delayInMinutes: action.delayInMinutes,
+    staticAttachments: action.staticAttachments,
   }));
 
   return prisma.ruleHistory.create({
@@ -61,11 +68,9 @@ export async function createRuleHistory({
       to: rule.to,
       subject: rule.subject,
       body: rule.body,
-      categoryFilterType: rule.categoryFilterType,
       systemType: rule.systemType,
       promptText: rule.promptText,
       actions: actionsSnapshot,
-      categoryFilters: categoryFiltersSnapshot,
       triggerType,
       // Note: this is unique and can fail in race conditions. Not a big deal for now.
       version: nextVersion,

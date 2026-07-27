@@ -6,12 +6,16 @@ import { OnboardingForm } from "@/app/(landing)/welcome/form";
 import { SquaresPattern } from "@/app/(landing)/home/SquaresPattern";
 import { PageHeading, TypographyP } from "@/components/Typography";
 import { CardBasic } from "@/components/ui/card";
-import { fetchUserAndStoreUtms } from "@/app/(landing)/welcome/utms";
+import {
+  extractUtmValues,
+  fetchUserAndStoreUtms,
+} from "@/app/(landing)/welcome/utms";
 import { auth } from "@/utils/auth";
+import { BRAND_NAME } from "@/utils/branding";
 
 export const metadata: Metadata = {
   title: "Welcome",
-  description: "Get started with Inbox Zero",
+  description: `Get started with ${BRAND_NAME}`,
   alternates: { canonical: "/welcome" },
 };
 
@@ -27,10 +31,12 @@ export default async function WelcomePage(props: {
   const authPromise = auth();
 
   const cookieStore = await cookies();
+  const utmValues = extractUtmValues(cookieStore);
+
   after(async () => {
     const user = await authPromise;
     if (!user?.user) return;
-    await fetchUserAndStoreUtms(user.user.id, cookieStore);
+    await fetchUserAndStoreUtms(user.user.id, utmValues);
   });
 
   return (
@@ -39,7 +45,7 @@ export default async function WelcomePage(props: {
 
       <CardBasic className="mx-auto flex max-w-2xl flex-col justify-center space-y-6 p-10 duration-500 animate-in fade-in">
         <div className="flex flex-col text-center">
-          <PageHeading>Welcome to Inbox Zero</PageHeading>
+          <PageHeading>{`Welcome to ${BRAND_NAME}`}</PageHeading>
           <TypographyP className="mt-2">Let{"'"}s get you set up!</TypographyP>
           <div className="mt-4">
             <Suspense>

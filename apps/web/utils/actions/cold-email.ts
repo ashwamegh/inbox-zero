@@ -1,110 +1,84 @@
 "use server";
 
-import type { gmail_v1 } from "@googleapis/gmail";
 import prisma from "@/utils/prisma";
-import { ColdEmailStatus } from "@prisma/client";
-import { getLabel, labelThread } from "@/utils/gmail/label";
-import { GmailLabel } from "@/utils/gmail/label";
-import { getThreads } from "@/utils/gmail/thread";
-import { inboxZeroLabels } from "@/utils/label";
-import { emailToContent } from "@/utils/mail";
+import { GroupItemSource } from "@/generated/prisma/enums";
 import { isColdEmail } from "@/utils/cold-email/is-cold-email";
 import {
   coldEmailBlockerBody,
   markNotColdEmailBody,
-  updateColdEmailPromptBody,
-  updateColdEmailSettingsBody,
 } from "@/utils/actions/cold-email.validation";
 import { actionClient } from "@/utils/actions/safe-action";
-import { getGmailClientForEmail } from "@/utils/account";
 import { SafeError } from "@/utils/error";
 import { createEmailProvider } from "@/utils/email/provider";
-
-export const updateColdEmailSettingsAction = actionClient
-  .metadata({ name: "updateColdEmailSettings" })
-  .schema(updateColdEmailSettingsBody)
-  .action(
-    async ({
-      ctx: { emailAccountId },
-      parsedInput: { coldEmailBlocker, coldEmailDigest },
-    }) => {
-      await prisma.emailAccount.update({
-        where: { id: emailAccountId },
-        data: {
-          coldEmailBlocker,
-          coldEmailDigest: coldEmailDigest ?? undefined,
-        },
-      });
-    },
-  );
-
-export const updateColdEmailPromptAction = actionClient
-  .metadata({ name: "updateColdEmailPrompt" })
-  .schema(updateColdEmailPromptBody)
-  .action(
-    async ({ ctx: { emailAccountId }, parsedInput: { coldEmailPrompt } }) => {
-      await prisma.emailAccount.update({
-        where: { id: emailAccountId },
-        data: { coldEmailPrompt },
-      });
-    },
-  );
+import type { EmailProvider } from "@/utils/email/types";
+import { getColdEmailRule } from "@/utils/cold-email/cold-email-rule";
+import { internalDateToDate } from "@/utils/date";
+import { saveLearnedPattern } from "@/utils/rule/learned-patterns";
+import { emailToContentForAI } from "@/utils/ai/content-sanitizer";
 
 export const markNotColdEmailAction = actionClient
   .metadata({ name: "markNotColdEmail" })
-  .schema(markNotColdEmailBody)
-  .action(async ({ ctx: { emailAccountId }, parsedInput: { sender } }) => {
-    const gmail = await getGmailClientForEmail({ emailAccountId });
+  .inputSchema(markNotColdEmailBody)
+  .action(
+    async ({
+      ctx: { emailAccountId, provider, logger },
+      parsedInput: { sender },
+    }) => {
+      const [emailProvider, coldEmailRule] = await Promise.all([
+        createEmailProvider({
+          emailAccountId,
+          provider,
+          logger,
+        }),
+        getColdEmailRule(emailAccountId),
+      ]);
 
-    await Promise.all([
-      prisma.coldEmail.update({
-        where: {
-          emailAccountId_fromEmail: {
-            emailAccountId,
-            fromEmail: sender,
-          },
-        },
-        data: {
-          status: ColdEmailStatus.USER_REJECTED_COLD,
-        },
-      }),
-      removeColdEmailLabelFromSender(gmail, sender),
-    ]);
-  });
+      if (!coldEmailRule) {
+        throw new SafeError("Cold email rule not found");
+      }
+
+      await Promise.all([
+        // Mark as excluded so AI doesn't match it again
+        saveLearnedPattern({
+          emailAccountId,
+          from: sender,
+          ruleId: coldEmailRule.id,
+          exclude: true,
+          logger,
+          source: GroupItemSource.USER,
+        }),
+        removeColdEmailLabelFromSender(emailProvider, sender, coldEmailRule),
+      ]);
+    },
+  );
 
 async function removeColdEmailLabelFromSender(
-  gmail: gmail_v1.Gmail,
+  emailProvider: EmailProvider,
   sender: string,
+  coldEmailRule: { actions: { labelId: string | null }[] },
 ) {
-  // 1. find cold email label
-  // 2. find emails from sender
-  // 3. remove cold email label from emails
+  const labelIds = coldEmailRule.actions
+    .map((action) => action.labelId)
+    .filter((id): id is string => Boolean(id));
 
-  const label = await getLabel({
-    gmail,
-    name: inboxZeroLabels.cold_email.name,
+  if (labelIds.length === 0) return;
+
+  const { threads } = await emailProvider.getThreadsWithQuery({
+    query: { fromEmail: sender },
+    maxResults: 100,
   });
-  if (!label?.id) return;
 
-  const threads = await getThreads(`from:${sender}`, [label.id], gmail);
-
-  for (const thread of threads.threads || []) {
-    if (!thread.id) continue;
-    await labelThread({
-      gmail,
-      threadId: thread.id,
-      addLabelIds: [GmailLabel.INBOX],
-      removeLabelIds: [label.id],
-    });
+  for (const thread of threads) {
+    await emailProvider.removeThreadLabels(thread.id, labelIds);
   }
 }
 
 export const testColdEmailAction = actionClient
   .metadata({ name: "testColdEmail" })
-  .schema(coldEmailBlockerBody)
+  .inputSchema(coldEmailBlockerBody)
   .action(
     async ({
-      ctx: { emailAccountId, provider },
+      ctx: { emailAccountId, provider, logger },
       parsedInput: {
         from,
         subject,
@@ -126,12 +100,17 @@ export const testColdEmailAction = actionClient
 
       if (!emailAccount) throw new SafeError("Email account not found");
 
+      const coldEmailRule = await getColdEmailRule(emailAccountId);
+
+      if (!coldEmailRule) throw new SafeError("Cold email rule not found");
+
       const emailProvider = await createEmailProvider({
         emailAccountId,
         provider,
+        logger,
       });
 
-      const content = emailToContent({
+      const content = emailToContentForAI({
         textHtml: textHtml || undefined,
         textPlain: textPlain || undefined,
         snippet: snippet || "",
@@ -143,13 +122,14 @@ export const testColdEmailAction = actionClient
           to: "",
           subject,
           content,
-          date: date ? new Date(date) : undefined,
+          date: date ? internalDateToDate(String(date)) : undefined,
           threadId: threadId || undefined,
           id: messageId || "",
         },
         emailAccount,
         provider: emailProvider,
         modelType: "chat",
+        coldEmailRule,
       });
 
       return response;

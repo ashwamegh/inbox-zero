@@ -1,6 +1,7 @@
 import type { RulesResponse } from "@/app/api/user/rules/route";
 import { isAIRule, type RuleConditions } from "@/utils/condition";
-import { ActionType } from "@prisma/client";
+import { ActionType } from "@/generated/prisma/enums";
+import { TEMPLATE_VARIABLE_PATTERN } from "@/utils/template";
 
 const RISK_LEVELS = {
   VERY_HIGH: "very-high",
@@ -22,7 +23,6 @@ export type RiskAction = {
 
 export function getActionRiskLevel(
   action: RiskAction,
-  isAutomated: boolean,
   rule: RuleConditions,
 ): {
   level: RiskLevel;
@@ -36,8 +36,7 @@ export function getActionRiskLevel(
   if (!highRiskActions.some((type) => type === action.type)) {
     return {
       level: RISK_LEVELS.LOW,
-      message:
-        "Low Risk: No email sending action is performed without your review.",
+      message: "Low Risk: No email sending action is performed.",
     };
   }
 
@@ -64,38 +63,37 @@ export function getActionRiskLevel(
     "partially-dynamic",
   );
 
-  if (isAutomated) {
-    if (hasFullyDynamicContent && hasFullyDynamicRecipient) {
-      const level = isAIRule(rule) ? RISK_LEVELS.VERY_HIGH : RISK_LEVELS.HIGH;
-      return {
-        level,
-        message: `${level === RISK_LEVELS.VERY_HIGH ? "Very High" : "High"} Risk: The AI can generate any content and send it to any address. A malicious actor could trick the AI to send spam or other unwanted emails on your behalf.`,
-      };
-    }
+  // All rules are now automated, so we always check for dynamic content risks
+  if (hasFullyDynamicContent && hasFullyDynamicRecipient) {
+    const level = isAIRule(rule) ? RISK_LEVELS.VERY_HIGH : RISK_LEVELS.HIGH;
+    return {
+      level,
+      message: `${level === RISK_LEVELS.VERY_HIGH ? "Very High" : "High"} Risk: The AI can generate any content and send it to any address. A malicious actor could trick the AI to send spam or other unwanted emails on your behalf.`,
+    };
+  }
 
-    if (hasFullyDynamicRecipient) {
-      return {
-        level: RISK_LEVELS.HIGH,
-        message:
-          "High Risk: The AI can send emails to any address. A malicious actor could use this to send spam or other unwanted emails on your behalf.",
-      };
-    }
+  if (hasFullyDynamicRecipient) {
+    return {
+      level: RISK_LEVELS.HIGH,
+      message:
+        "High Risk: The AI can send emails to any address. A malicious actor could use this to send spam or other unwanted emails on your behalf.",
+    };
+  }
 
-    if (hasFullyDynamicContent) {
-      return {
-        level: RISK_LEVELS.HIGH,
-        message:
-          "High Risk: The AI can automatically generate and send any email content. A malicious actor could potentially trick the AI into generating unwanted or inappropriate content.",
-      };
-    }
+  if (hasFullyDynamicContent) {
+    return {
+      level: RISK_LEVELS.HIGH,
+      message:
+        "High Risk: The AI can automatically generate and send any email content. A malicious actor could potentially trick the AI into generating unwanted or inappropriate content.",
+    };
+  }
 
-    if (hasPartiallyDynamicContent || hasPartiallyDynamicRecipient) {
-      return {
-        level: RISK_LEVELS.MEDIUM,
-        message:
-          "Medium Risk: The AI can generate content or recipients using templates. While more constrained than fully dynamic content, review the templates carefully.",
-      };
-    }
+  if (hasPartiallyDynamicContent || hasPartiallyDynamicRecipient) {
+    return {
+      level: RISK_LEVELS.MEDIUM,
+      message:
+        "Medium Risk: The AI can generate content or recipients using templates. While more constrained than fully dynamic content, review the templates carefully.",
+    };
   }
 
   return {
@@ -122,7 +120,7 @@ function compareRiskLevels(a: RiskLevel, b: RiskLevel): RiskLevel {
 }
 
 export function getRiskLevel(
-  rule: Pick<RulesResponse[number], "actions" | "automate"> & RuleConditions,
+  rule: Pick<RulesResponse[number], "actions"> & RuleConditions,
 ): {
   level: RiskLevel;
   message: string;
@@ -130,7 +128,7 @@ export function getRiskLevel(
   // Get risk level for each action and return the highest risk
   return rule.actions.reduce<{ level: RiskLevel; message: string }>(
     (highestRisk, action) => {
-      const actionRisk = getActionRiskLevel(action, rule.automate, rule);
+      const actionRisk = getActionRiskLevel(action, rule);
       if (
         compareRiskLevels(actionRisk.level, highestRisk.level) ===
         actionRisk.level
@@ -164,10 +162,11 @@ function getFieldsDynamicStatus(action: RiskAction) {
 }
 
 // Helper functions
-function isFullyDynamicField(field: string) {
-  return /^\{\{.*?\}\}$/.test(field);
+export function isFullyDynamicField(field: string) {
+  const trimmed = field.trim();
+  return trimmed.startsWith("{{") && trimmed.endsWith("}}");
 }
 
-function isPartiallyDynamicField(field: string) {
-  return /\{\{.*?\}\}/.test(field);
+export function isPartiallyDynamicField(field: string) {
+  return new RegExp(TEMPLATE_VARIABLE_PATTERN).test(field);
 }

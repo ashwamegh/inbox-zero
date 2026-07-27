@@ -1,36 +1,67 @@
-import crypto from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { withAuth } from "@/utils/middleware";
 import { getLinkingOAuth2Url } from "@/utils/outlook/client";
 import { OUTLOOK_LINKING_STATE_COOKIE_NAME } from "@/utils/outlook/constants";
+import { SCOPES as OUTLOOK_SCOPES } from "@/utils/outlook/scopes";
+import { hasActiveAccountLinkingUser } from "@/utils/oauth/account-linking";
+import { createOAuthLinkingAuditLogger } from "@/utils/oauth/linking-audit";
+import {
+  generateSignedOAuthState,
+  oauthStateCookieOptions,
+} from "@/utils/oauth/state";
 
 export type GetOutlookAuthLinkUrlResponse = { url: string };
 
-const getAuthUrl = ({ userId, action }: { userId: string; action: string }) => {
-  const stateObject = { userId, action, nonce: crypto.randomUUID() };
-  const state = Buffer.from(JSON.stringify(stateObject)).toString("base64url");
+const getAuthUrl = ({ userId }: { userId: string }) => {
+  const stateNonce = randomUUID();
+  const state = generateSignedOAuthState({ userId, nonce: stateNonce });
 
   const baseUrl = getLinkingOAuth2Url();
   const url = `${baseUrl}&state=${state}`;
 
-  return { url, state };
+  return { url, state, stateNonce };
 };
 
-export const GET = withAuth(async (request) => {
+export const GET = withAuth("outlook/linking/auth-url", async (request) => {
   const userId = request.auth.userId;
-  const url = new URL(request.url);
-  const action = url.searchParams.get("action") || "merge";
-  const { url: authUrl, state } = getAuthUrl({ userId, action });
+  const hasActiveUser = await hasActiveAccountLinkingUser({
+    targetUserId: userId,
+    logger: request.logger,
+  });
+
+  if (!hasActiveUser) {
+    return NextResponse.json(
+      { error: "Unauthorized", isKnownError: true, redirectTo: "/logout" },
+      { status: 401 },
+    );
+  }
+
+  const { url: authUrl, state, stateNonce } = getAuthUrl({ userId });
+  const parsedAuthUrl = new URL(authUrl);
+  const logger = createOAuthLinkingAuditLogger({
+    actorUserId: userId,
+    logger: request.logger,
+    provider: "microsoft",
+    stateNonce,
+    targetUserId: userId,
+  });
+
+  logger.info("OAuth linking flow initiated");
+
+  logger.info("Generated Microsoft email linking auth URL", {
+    prompt: parsedAuthUrl.searchParams.get("prompt"),
+    redirectUri: parsedAuthUrl.searchParams.get("redirect_uri"),
+    requestedScopes: OUTLOOK_SCOPES,
+  });
 
   const response = NextResponse.json({ url: authUrl });
 
-  response.cookies.set(OUTLOOK_LINKING_STATE_COOKIE_NAME, state, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV !== "development",
-    maxAge: 60 * 10,
-    path: "/",
-    sameSite: "lax",
-  });
+  response.cookies.set(
+    OUTLOOK_LINKING_STATE_COOKIE_NAME,
+    state,
+    oauthStateCookieOptions,
+  );
 
   return response;
 });

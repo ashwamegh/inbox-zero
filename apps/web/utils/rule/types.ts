@@ -1,5 +1,8 @@
-import type { safeCreateRule } from "@/utils/rule/rule";
+import type { Prisma } from "@/generated/prisma/client";
 
-export type CreateRuleResult = NonNullable<
-  Awaited<ReturnType<typeof safeCreateRule>>
->;
+export type RuleWithRelations = Prisma.RuleGetPayload<{
+  include: {
+    actions: true;
+    group: true;
+  };
+}>;

@@ -1,10 +1,11 @@
-import { ScheduledActionStatus } from "@prisma/client";
+import { ScheduledActionStatus } from "@/generated/prisma/enums";
 import prisma from "@/utils/prisma";
 import type { ActionItem } from "@/utils/ai/types";
 import { createScopedLogger } from "@/utils/logger";
 import { canActionBeDelayed } from "@/utils/delayed-actions";
 import { env } from "@/env";
 import { getCronSecretHeader } from "@/utils/cron";
+import { getInternalApiUrl } from "@/utils/internal-api";
 import { Client } from "@upstash/qstash";
 import { addMinutes, getUnixTime } from "date-fns";
 
@@ -66,6 +67,8 @@ export async function createScheduledAction({
         url: actionItem.url,
         folderName: actionItem.folderName,
         folderId: actionItem.folderId,
+        staticAttachments: actionItem.staticAttachments ?? undefined,
+        selectedAttachments: actionItem.selectedAttachments ?? undefined,
       },
     });
 
@@ -91,7 +94,7 @@ export async function createScheduledAction({
       });
     }
 
-    logger.info("Created and scheduled action with QStash", {
+    logger.info("Created scheduled action", {
       scheduledActionId: scheduledAction.id,
       actionType: actionItem.type,
       scheduledFor,
@@ -168,11 +171,13 @@ export async function cancelScheduledActions({
   emailAccountId,
   messageId,
   threadId,
+  ruleId,
   reason = "Superseded by new rule",
 }: {
   emailAccountId: string;
   messageId: string;
   threadId?: string;
+  ruleId: string;
   reason?: string;
 }) {
   try {
@@ -183,6 +188,9 @@ export async function cancelScheduledActions({
         messageId,
         ...(threadId && { threadId }),
         status: ScheduledActionStatus.PENDING,
+        executedRule: {
+          ruleId,
+        },
       },
       select: { id: true, scheduledId: true },
     });
@@ -220,6 +228,7 @@ export async function cancelScheduledActions({
         messageId,
         ...(threadId && { threadId }),
         status: ScheduledActionStatus.PENDING,
+        executedRule: { ruleId },
       },
       data: {
         status: ScheduledActionStatus.CANCELLED,
@@ -231,6 +240,7 @@ export async function cancelScheduledActions({
       emailAccountId,
       messageId,
       threadId,
+      ruleId,
       reason,
     });
 
@@ -256,12 +266,12 @@ async function scheduleMessage({
   deduplicationId: string;
 }) {
   const client = getQstashClient();
-  const url = `${env.WEBHOOK_URL || env.NEXT_PUBLIC_BASE_URL}/api/scheduled-actions/execute`;
-
   const notBefore = getUnixTime(addMinutes(new Date(), delayInMinutes));
 
   try {
     if (client) {
+      const url = `${getInternalApiUrl()}/api/scheduled-actions/execute`;
+
       const response = await client.publishJSON({
         url,
         body: payload,
@@ -286,23 +296,10 @@ async function scheduleMessage({
 
       return messageId;
     } else {
-      logger.error(
-        "QStash client not available, scheduled action cannot be executed",
-        {
-          scheduledActionId: payload.scheduledActionId,
-        },
-      );
-
-      await prisma.scheduledAction.update({
-        where: { id: payload.scheduledActionId },
-        data: {
-          schedulingStatus: "FAILED" as const,
-        },
+      logger.info("QStash client not available, using cron fallback", {
+        scheduledActionId: payload.scheduledActionId,
       });
-
-      throw new Error(
-        "QStash client not available - scheduled action cannot be executed",
-      );
+      return null;
     }
   } catch (error) {
     logger.error("Failed to schedule with QStash", {

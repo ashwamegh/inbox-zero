@@ -1,49 +1,51 @@
 import { NextResponse, after } from "next/server";
 import { headers } from "next/headers";
-import type { gmail_v1 } from "@googleapis/gmail";
-import { z } from "zod";
-import { getGmailClientWithRefresh } from "@/utils/gmail/client";
 import { withError } from "@/utils/middleware";
 import prisma from "@/utils/prisma";
-import { createScopedLogger } from "@/utils/logger";
+import type { Logger } from "@/utils/logger";
+import type { ParsedMessage } from "@/utils/types";
 import { aiDetectRecurringPattern } from "@/utils/ai/choose-rule/ai-detect-recurring-pattern";
+import { analyzeSenderPatternBodySchema } from "@/utils/ai/choose-rule/analyze-sender-pattern";
 import { isValidInternalApiKey } from "@/utils/internal-api";
-import { getThreadMessages, getThreads } from "@/utils/gmail/thread";
-import { extractEmailAddress } from "@/utils/email";
+import { canonicalizeEmailAddress, extractEmailAddress } from "@/utils/email";
 import { getEmailForLLM } from "@/utils/get-email-from-message";
 import { saveLearnedPattern } from "@/utils/rule/learned-patterns";
+import { GroupItemSource } from "@/generated/prisma/enums";
+import { checkSenderRuleHistory } from "@/utils/rule/check-sender-rule-history";
+import { createEmailProvider } from "@/utils/email/provider";
+import type { EmailProvider } from "@/utils/email/types";
+import { upsertSenderRecord } from "@/utils/senders/record";
 
 export const maxDuration = 60;
 
-const THRESHOLD_EMAILS = 3;
+const THRESHOLD_THREADS = 3;
 const MAX_RESULTS = 10;
 
-const logger = createScopedLogger("api/ai/pattern-match");
+export const POST = withError(
+  "api/ai/analyze-sender-pattern",
+  async (request) => {
+    const json = await request.json();
 
-const schema = z.object({
-  emailAccountId: z.string(),
-  from: z.string(),
-});
-export type AnalyzeSenderPatternBody = z.infer<typeof schema>;
+    let logger = request.logger;
 
-export const POST = withError(async (request) => {
-  const json = await request.json();
+    if (!isValidInternalApiKey(await headers(), logger)) {
+      logger.error("Invalid API key for sender pattern analysis", json);
+      return NextResponse.json({ error: "Invalid API key" }, { status: 401 });
+    }
 
-  if (!isValidInternalApiKey(await headers(), logger)) {
-    logger.error("Invalid API key for sender pattern analysis", json);
-    return NextResponse.json({ error: "Invalid API key" });
-  }
+    const data = analyzeSenderPatternBodySchema.parse(json);
+    const { emailAccountId } = data;
+    const from = canonicalizeEmailAddress(data.from);
 
-  const data = schema.parse(json);
-  const { emailAccountId } = data;
-  const from = extractEmailAddress(data.from);
+    logger = logger.with({ from });
 
-  logger.trace("Analyzing sender pattern", { emailAccountId, from });
+    logger.trace("Analyzing sender pattern");
 
-  // return immediately and process in background
-  after(() => process({ emailAccountId, from }));
-  return NextResponse.json({ processing: true });
-});
+    // return immediately and process in background
+    after(() => process({ emailAccountId, from, logger }));
+    return NextResponse.json({ processing: true });
+  },
+);
 
 /**
  * Main background process function that:
@@ -56,90 +58,106 @@ export const POST = withError(async (request) => {
 async function process({
   emailAccountId,
   from,
+  logger,
 }: {
   emailAccountId: string;
   from: string;
+  logger: Logger;
 }) {
   try {
     const emailAccount = await getEmailAccountWithRules({ emailAccountId });
 
-    if (emailAccount?.account?.provider !== "google") {
-      logger.warn("Unsupported provider", { emailAccountId });
-      return NextResponse.json({ success: false }, { status: 400 });
-    }
-
     if (!emailAccount) {
-      logger.error("Email account not found", { emailAccountId });
+      logger.error("Email account not found");
       return NextResponse.json({ success: false }, { status: 404 });
     }
 
-    // Check if we've already analyzed this sender
-    const existingCheck = await prisma.newsletter.findUnique({
+    const existingCheck = await prisma.newsletter.findFirst({
       where: {
-        email_emailAccountId: {
-          email: extractEmailAddress(from),
-          emailAccountId: emailAccount.id,
-        },
+        emailAccountId: emailAccount.id,
+        email: { equals: from, mode: "insensitive" },
+        patternAnalyzed: true,
       },
     });
 
-    if (existingCheck?.patternAnalyzed) {
-      logger.info("Sender has already been analyzed", { from, emailAccountId });
+    if (existingCheck) {
+      logger.info("Sender has already been analyzed");
       return NextResponse.json({ success: true });
     }
 
     const account = emailAccount.account;
 
-    if (!account?.access_token || !account?.refresh_token) {
-      logger.error("No Gmail account found", { emailAccountId });
+    if (!account?.provider) {
+      logger.error("No email provider found");
       return NextResponse.json({ success: false }, { status: 404 });
     }
 
-    const gmail = await getGmailClientWithRefresh({
-      accessToken: account.access_token,
-      refreshToken: account.refresh_token,
-      expiresAt: account.expires_at?.getTime() || null,
+    const provider = await createEmailProvider({
       emailAccountId,
+      provider: account.provider,
+      logger,
     });
 
-    // Get threads from this sender
-    const threadsWithMessages = await getThreadsFromSender(
-      gmail,
-      from,
-      MAX_RESULTS,
-    );
+    const { threads: threadsWithMessages, conversationDetected } =
+      await getThreadsFromSender(provider, from, MAX_RESULTS, logger);
 
     // If no threads found or we've detected a conversation, return early
+    if (conversationDetected) {
+      logger.info("Skipping sender pattern detection - conversation detected", {
+        provider: account.provider,
+      });
+      await savePatternCheck({ emailAccountId, from });
+      return NextResponse.json({ success: true });
+    }
+
     if (threadsWithMessages.length === 0) {
       logger.info("No threads found from this sender", {
-        from,
-        emailAccountId,
+        provider: account.provider,
       });
 
       // Don't record a check since we didn't run the AI analysis
       return NextResponse.json({ success: true });
     }
 
-    // Get all messages and check if we have enough for pattern detection
+    if (threadsWithMessages.length < THRESHOLD_THREADS) {
+      logger.info("Not enough emails found from this sender", {
+        threadsWithMessagesCount: threadsWithMessages.length,
+      });
+
+      return NextResponse.json({ success: true });
+    }
+
     const allMessages = threadsWithMessages.flatMap(
       (thread) => thread.messages,
     );
 
-    if (allMessages.length < THRESHOLD_EMAILS) {
-      logger.info("Not enough emails found from this sender", {
-        from,
-        emailAccountId,
-        count: allMessages.length,
+    const senderHistory = await checkSenderRuleHistory({
+      emailAccountId,
+      from,
+      provider,
+      logger,
+    });
+
+    if (!senderHistory.hasConsistentRule) {
+      logger.info("Sender does not have consistent rule history", {
+        totalEmails: senderHistory.totalEmails,
+        uniqueRulesMatched: senderHistory.ruleMatches.size,
       });
 
-      // Don't record a check since we didn't run the AI analysis
+      if (senderHistory.totalEmails > 0) {
+        await savePatternCheck({ emailAccountId, from });
+      }
+
       return NextResponse.json({ success: true });
     }
 
-    // Convert messages to EmailForLLM format
+    logger.info("Sender has consistent rule history", {
+      consistentRule: senderHistory.consistentRuleName,
+      totalEmails: senderHistory.totalEmails,
+    });
+
     const emails = allMessages.map((message) => getEmailForLLM(message));
 
-    // Detect pattern using AI
     const patternResult = await aiDetectRecurringPattern({
       emails,
       emailAccount,
@@ -147,27 +165,44 @@ async function process({
         name: rule.name,
         instructions: rule.instructions || "",
       })),
+      consistentRuleName: senderHistory.consistentRuleName,
+      logger,
     });
 
     if (patternResult?.matchedRule) {
-      // Save pattern to DB (adds sender to rule's group)
-      await saveLearnedPattern({
-        emailAccountId,
-        from,
-        ruleName: patternResult.matchedRule,
-      });
+      // Verify the AI matched the same rule as the historical data
+      if (patternResult.matchedRule === senderHistory.consistentRuleName) {
+        const matchedRule = emailAccount.rules.find(
+          (rule) => rule.name === patternResult.matchedRule,
+        );
+
+        if (matchedRule) {
+          await saveLearnedPattern({
+            emailAccountId,
+            from,
+            ruleId: matchedRule.id,
+            logger,
+            source: GroupItemSource.AI,
+          });
+        } else {
+          logger.error("Matched rule not found in email account rules", {
+            ruleName: patternResult.matchedRule,
+            availableRules: emailAccount.rules.map((r) => r.name),
+          });
+        }
+      } else {
+        logger.warn("AI suggested different rule than historical data", {
+          aiRule: patternResult.matchedRule,
+          historicalRule: senderHistory.consistentRuleName,
+        });
+      }
     }
 
-    // Record the pattern analysis result
     await savePatternCheck({ emailAccountId, from });
 
     return NextResponse.json({ success: true });
   } catch (error) {
-    logger.error("Error in pattern match API", {
-      from,
-      emailAccountId,
-      error,
-    });
+    logger.error("Error in pattern match API", { error });
 
     return NextResponse.json(
       { error: "Failed to detect pattern" },
@@ -186,20 +221,10 @@ async function savePatternCheck({
   emailAccountId: string;
   from: string;
 }) {
-  await prisma.newsletter.upsert({
-    where: {
-      email_emailAccountId: {
-        email: from,
-        emailAccountId,
-      },
-    },
-    update: {
-      patternAnalyzed: true,
-      lastAnalyzedAt: new Date(),
-    },
-    create: {
-      email: from,
-      emailAccountId,
+  await upsertSenderRecord({
+    emailAccountId,
+    senderEmail: from,
+    changes: {
       patternAnalyzed: true,
       lastAnalyzedAt: new Date(),
     },
@@ -213,36 +238,61 @@ async function savePatternCheck({
  * by excluding threads where users have replied or others have participated.
  */
 async function getThreadsFromSender(
-  gmail: gmail_v1.Gmail,
+  provider: EmailProvider,
   sender: string,
   maxResults: number,
-) {
+  logger: Logger,
+): Promise<{
+  threads: Array<{
+    threadId: string;
+    messages: ParsedMessage[];
+  }>;
+  conversationDetected: boolean;
+}> {
   const from = extractEmailAddress(sender);
-  const threads = await getThreads(
-    `from:${from} -label:sent -label:draft`,
-    [],
-    gmail,
+
+  if (!from) {
+    logger.error("Unable to analyze sender pattern - from address missing", {
+      from: sender,
+    });
+    return {
+      threads: [],
+      conversationDetected: false,
+    };
+  }
+
+  const { threads } = await provider.getThreadsWithQuery({
+    query: { fromEmail: from, type: "all" },
     maxResults,
-  );
+  });
 
   const threadsWithMessages = [];
+  const normalizedFrom = from.toLowerCase();
 
   // Check for conversation threads
-  for (const thread of threads.threads) {
-    const messages = await getThreadMessages(thread.id, gmail);
+  for (const thread of threads) {
+    const messages = await provider.getThreadMessages(thread.id);
+    if (messages.length === 0) continue;
 
     // Check if this is a conversation (multiple senders)
-    const senders = messages.map((msg) =>
-      extractEmailAddress(msg.headers.from),
-    );
-    const hasOtherSenders = senders.some((s) => s !== from);
+    const otherSenders = new Set<string>();
+
+    for (const message of messages) {
+      const senderEmail = extractEmailAddress(message.headers.from);
+      if (!senderEmail) continue;
+
+      const normalizedSender = senderEmail.toLowerCase();
+      if (normalizedSender !== normalizedFrom) {
+        otherSenders.add(normalizedSender);
+      }
+    }
 
     // If we found a conversation thread, skip this sender entirely
-    if (hasOtherSenders) {
-      logger.info("Skipping sender pattern detection - conversation detected", {
-        from,
-      });
-      return [];
+    if (otherSenders.size > 0) {
+      return {
+        threads: [],
+        conversationDetected: true,
+      };
     }
 
     threadsWithMessages.push({
@@ -251,7 +301,10 @@ async function getThreadsFromSender(
     });
   }
 
-  return threadsWithMessages;
+  return {
+    threads: threadsWithMessages,
+    conversationDetected: false,
+  };
 }
 
 async function getEmailAccountWithRules({
@@ -266,6 +319,10 @@ async function getEmailAccountWithRules({
       userId: true,
       email: true,
       about: true,
+      multiRuleSelectionEnabled: true,
+      sensitiveDataPolicy: true,
+      timezone: true,
+      calendarBookingLink: true,
       user: {
         select: {
           aiProvider: true,

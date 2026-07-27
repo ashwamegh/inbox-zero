@@ -12,20 +12,37 @@ async function getMultiAccountEmails({ userId }: { userId: string }) {
     select: {
       premium: {
         select: {
-          users: { select: { email: true } },
+          users: {
+            select: {
+              id: true,
+              emailAccounts: {
+                select: { email: true },
+              },
+            },
+          },
           admins: { select: { id: true } },
         },
       },
     },
   });
 
+  // Mark each email with whether it belongs to the current user
+  // Own accounts can't be removed from this form - users must go to /accounts
+  const emailAccounts =
+    user?.premium?.users?.flatMap((u) =>
+      u.emailAccounts.map((ea) => ({
+        email: ea.email,
+        isOwnAccount: u.id === userId,
+      })),
+    ) || [];
+
   return {
-    users: user?.premium?.users || [],
+    emailAccounts,
     admins: user?.premium?.admins || [],
   };
 }
 
-export const GET = withAuth(async (request) => {
+export const GET = withAuth("user/settings/multi-account", async (request) => {
   const userId = request.auth.userId;
 
   const result = await getMultiAccountEmails({ userId });

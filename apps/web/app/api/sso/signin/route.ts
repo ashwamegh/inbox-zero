@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { type NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { betterAuthConfig } from "@/utils/auth";
 import { SafeError } from "@/utils/error";
-import { createScopedLogger } from "@/utils/logger";
 import { withError } from "@/utils/middleware";
+import { getEnabledLoginProviders } from "@/utils/oauth/login-providers";
 import prisma from "@/utils/prisma";
 
 const getSsoSignInSchema = z.object({
@@ -16,16 +16,18 @@ export type GetSsoSignInResponse = {
   providerId: string;
 };
 
-const logger = createScopedLogger("api/sso/signin");
-
-export const GET = withError(async (request: NextRequest) => {
+export const GET = withError("sso/signin", async (request) => {
   const { searchParams } = new URL(request.url);
   const { email, organizationSlug } = getSsoSignInSchema.parse({
     email: searchParams.get("email"),
     organizationSlug: searchParams.get("organizationSlug"),
   });
 
-  logger.info("SSO sign-in requested", { email, organizationSlug });
+  request.logger.info("SSO sign-in requested", { email, organizationSlug });
+
+  if (!getEnabledLoginProviders().has("sso")) {
+    throw new SafeError("SSO login is not enabled");
+  }
 
   const provider = await prisma.ssoProvider.findFirst({
     where: {
@@ -39,7 +41,7 @@ export const GET = withError(async (request: NextRequest) => {
   });
 
   if (!provider) {
-    logger.error("No SSO provider found for sign-in", {
+    request.logger.error("No SSO provider found for sign-in", {
       email,
       organizationSlug,
     });
@@ -50,6 +52,8 @@ export const GET = withError(async (request: NextRequest) => {
     body: {
       providerId: provider.providerId,
       callbackURL: "/accounts",
+      email,
+      loginHint: email,
     },
   });
 

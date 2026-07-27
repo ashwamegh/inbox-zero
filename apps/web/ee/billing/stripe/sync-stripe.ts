@@ -1,18 +1,19 @@
-import sumBy from "lodash/sumBy";
+import { after } from "next/server";
 import prisma from "@/utils/prisma";
-import { createScopedLogger } from "@/utils/logger";
+import type { Logger } from "@/utils/logger";
 import { getStripe } from "@/ee/billing/stripe";
 import { getStripeSubscriptionTier } from "@/app/(app)/premium/config";
 import { handleLoopsEvents } from "@/ee/billing/stripe/loops-events";
-import { updateAccountSeatsForPremium } from "@/utils/premium/server";
-import type { Prisma } from "@prisma/client";
-
-const logger = createScopedLogger("stripe/syncStripeDataToDb");
+import { syncPremiumSeats } from "@/utils/premium/seats";
+import { ensureEmailAccountsWatched } from "@/utils/email/watch-manager";
+import { captureException } from "@/utils/error";
 
 export async function syncStripeDataToDb({
   customerId,
+  logger,
 }: {
   customerId: string;
+  logger: Logger;
 }) {
   try {
     const stripe = getStripe();
@@ -29,6 +30,14 @@ export async function syncStripeDataToDb({
       },
     });
 
+    if (!currentPremium) {
+      // This should theoretically never happen as we always create customer IDs for users before Stripe.
+      // We log an error and upsert to catch and self-heal from any such issues.
+      logger.error("No Premium record found for Stripe customer during sync", {
+        customerId,
+      });
+    }
+
     // Fetch latest subscription data from Stripe, expanding necessary fields
     const subscriptions = await stripe.subscriptions.list({
       customer: customerId,
@@ -43,21 +52,27 @@ export async function syncStripeDataToDb({
     // Case: No active or past subscription found for the customer
     if (subscriptions.data.length === 0) {
       logger.info("No Stripe subscription found for customer", { customerId });
-      // Update the corresponding Premium record to reflect no active subscription
-      await prisma.premium.update({
+
+      const subscriptionData = {
+        stripeSubscriptionId: null,
+        stripeSubscriptionItemId: null,
+        stripePriceId: null,
+        stripeProductId: null,
+        stripeSubscriptionStatus: null,
+        stripeCancelAtPeriodEnd: null,
+        stripeRenewsAt: null,
+        stripeTrialEnd: null,
+      };
+
+      await prisma.premium.upsert({
         where: { stripeCustomerId: customerId },
-        data: {
-          stripeSubscriptionId: null,
-          stripeSubscriptionItemId: null,
-          stripePriceId: null,
-          stripeProductId: null,
-          stripeSubscriptionStatus: null, // Or 'none', 'canceled' depending on desired state
-          stripeCancelAtPeriodEnd: null,
-          stripeRenewsAt: null,
-          stripeTrialEnd: null,
-          // Keep stripeCanceledAt and stripeEndedAt as they might be relevant if it *was* canceled/ended previously
+        update: subscriptionData,
+        create: {
+          ...subscriptionData,
+          stripeCustomerId: customerId,
         },
       });
+
       logger.info("Updated Premium record for customer with no subscription", {
         customerId,
       });
@@ -91,41 +106,52 @@ export async function syncStripeDataToDb({
     const product = price.product;
 
     const tier = getStripeSubscriptionTier({ priceId: price.id });
+    const stripeSubscriptionStatus =
+      getEffectiveStripeSubscriptionStatus(subscription);
 
     const newTrialEnd = subscription.trial_end
       ? new Date(subscription.trial_end * 1000)
       : null;
 
-    const updatedPremium = await prisma.premium.update({
+    const subscriptionData = {
+      tier,
+      stripeSubscriptionId: subscription.id,
+      stripeSubscriptionItemId: subscriptionItem.id,
+      stripePriceId: price.id,
+      stripeProductId: typeof product === "string" ? product : product.id,
+      stripeSubscriptionStatus,
+      stripeRenewsAt: subscriptionItem.current_period_end
+        ? new Date(subscriptionItem.current_period_end * 1000)
+        : null,
+      stripeCancelAtPeriodEnd: subscription.cancel_at_period_end,
+      stripeTrialEnd: newTrialEnd,
+      stripeCanceledAt: subscription.canceled_at
+        ? new Date(subscription.canceled_at * 1000)
+        : null,
+      stripeEndedAt: subscription.ended_at
+        ? new Date(subscription.ended_at * 1000)
+        : null,
+    };
+
+    if (currentPremium?.stripeSubscriptionStatus !== stripeSubscriptionStatus) {
+      logger.info("Stripe subscription status changing", {
+        customerId,
+        previousStatus: currentPremium?.stripeSubscriptionStatus,
+        newStatus: stripeSubscriptionStatus,
+        subscriptionId: subscription.id,
+      });
+    }
+
+    const updatedPremium = await prisma.premium.upsert({
       where: { stripeCustomerId: customerId },
-      data: {
-        tier,
-        stripeSubscriptionId: subscription.id,
-        stripeSubscriptionItemId: subscriptionItem.id,
-        stripePriceId: price.id,
-        stripeProductId: typeof product === "string" ? product : product.id, // Handle expanded product object
-        stripeSubscriptionStatus: subscription.status,
-        stripeRenewsAt: subscriptionItem.current_period_end // RenewsAt uses the item's period end
-          ? new Date(subscriptionItem.current_period_end * 1000)
-          : null,
-        stripeCancelAtPeriodEnd: subscription.cancel_at_period_end,
-        stripeTrialEnd: newTrialEnd,
-        stripeCanceledAt: subscription.canceled_at
-          ? new Date(subscription.canceled_at * 1000)
-          : null,
-        stripeEndedAt: subscription.ended_at
-          ? new Date(subscription.ended_at * 1000)
-          : null,
+      update: subscriptionData,
+      create: {
+        ...subscriptionData,
+        stripeCustomerId: customerId,
       },
       select: {
-        stripeSubscriptionItemId: true,
-        pendingInvites: true,
-        users: {
-          select: {
-            email: true,
-            _count: { select: { emailAccounts: true } },
-          },
-        },
+        id: true,
+        users: { select: { id: true } },
       },
     });
 
@@ -134,49 +160,46 @@ export async function syncStripeDataToDb({
       currentPremium,
       newSubscription: subscription,
       newTier: tier,
+      logger,
     });
 
     logger.info("Successfully updated Premium record from Stripe data", {
       customerId,
     });
 
-    await syncSeats(updatedPremium);
+    await syncPremiumSeats(updatedPremium.id);
+
+    after(() => {
+      const userIds = updatedPremium.users.map((user) => user.id);
+
+      const statusChanged =
+        currentPremium?.stripeSubscriptionStatus !== stripeSubscriptionStatus;
+      const tierChanged = currentPremium?.tier !== tier;
+
+      if (userIds.length && (!currentPremium || statusChanged || tierChanged)) {
+        ensureEmailAccountsWatched({ userIds, logger }).catch((error) => {
+          logger.error("Failed to ensure email watches after Stripe sync", {
+            customerId,
+            userIds,
+            error,
+          });
+        });
+      }
+    });
   } catch (error) {
     logger.error("Error syncing Stripe data to DB", { customerId, error });
+    captureException(error, { extra: { customerId } });
     throw error;
   }
 }
 
-async function syncSeats(
-  premium: Prisma.PremiumGetPayload<{
-    select: {
-      users: {
-        select: { email: true; _count: { select: { emailAccounts: true } } };
-      };
-      pendingInvites: true;
-      stripeSubscriptionItemId: true;
-    };
-  }>,
-) {
-  try {
-    // Get all connected user emails
-    const connectedUserEmails = new Set(premium.users.map((u) => u.email));
-
-    // Filter out pending invites that are already connected users to avoid double counting
-    const uniquePendingInvites = (premium.pendingInvites || []).filter(
-      (email) => !connectedUserEmails.has(email),
-    );
-
-    // total seats = premium users + unique pending invites (excluding duplicates)
-    const totalSeats =
-      sumBy(premium.users, (u) => u._count.emailAccounts) +
-      uniquePendingInvites.length;
-
-    await updateAccountSeatsForPremium(premium, totalSeats);
-  } catch (error) {
-    logger.error("Error updating account seats for premium", {
-      stripeSubscriptionItemId: premium.stripeSubscriptionItemId,
-      error,
-    });
-  }
+function getEffectiveStripeSubscriptionStatus(subscription: {
+  status: string;
+  cancel_at_period_end: boolean;
+}) {
+  return subscription.status === "trialing" && subscription.cancel_at_period_end
+    ? "canceled"
+    : subscription.status;
 }
+
+export { getEffectiveStripeSubscriptionStatus };

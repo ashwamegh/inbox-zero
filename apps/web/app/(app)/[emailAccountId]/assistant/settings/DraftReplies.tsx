@@ -6,7 +6,7 @@ import { enableDraftRepliesAction } from "@/utils/actions/rule";
 import { toastError } from "@/components/Toast";
 import { useAccount } from "@/providers/EmailAccountProvider";
 import { useRules } from "@/hooks/useRules";
-import { ActionType, SystemType } from "@prisma/client";
+import { ActionType, SystemType } from "@/generated/prisma/enums";
 import { LoadingContent } from "@/components/LoadingContent";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SettingCard } from "@/components/SettingCard";
@@ -63,24 +63,24 @@ export function useDraftReplies() {
     async (enable: boolean) => {
       if (!data) return;
 
-      // Optimistically update the cache
       const optimisticData = data.map((rule) => {
         if (rule.systemType === SystemType.TO_REPLY) {
           return {
             ...rule,
             actions: enable
-              ? // Add DRAFT_EMAIL action if enabling
-                rule.actions.some(
+              ? rule.actions.some(
                   (action) => action.type === ActionType.DRAFT_EMAIL,
                 )
-                ? rule.actions // Already has the action
+                ? rule.actions
                 : [
                     ...rule.actions,
                     {
                       id: `temp-${Date.now()}`, // Temporary ID for optimistic update
                       type: ActionType.DRAFT_EMAIL,
                       ruleId: rule.id,
+                      emailAccountId,
                       label: null,
+                      labelId: null,
                       subject: null,
                       content: null,
                       to: null,
@@ -90,6 +90,9 @@ export function useDraftReplies() {
                       delayInMinutes: null,
                       folderName: null,
                       folderId: null,
+                      messagingChannelId: null,
+                      messagingChannelEmailAccountId: null,
+                      staticAttachments: null,
                       createdAt: new Date(),
                       updatedAt: new Date(),
                     },
@@ -112,7 +115,6 @@ export function useDraftReplies() {
           enable,
         });
 
-        // Revalidate to get the real data from server
         mutate();
 
         return result;

@@ -57,6 +57,7 @@ type ActionFunction = ({
 }: {
   threadId: string;
   labelId?: string;
+  // biome-ignore lint/suspicious/noExplicitAny: existing loose external shape
 }) => Promise<any>;
 
 const addThreadsToQueue = ({
@@ -210,7 +211,7 @@ export function processQueue({
                 // when Gmail API returns a rate limit error, throw an error so it can be retried
                 if (result?.serverError) {
                   await sleep(exponentialBackoff(attemptCount, 1000));
-                  throw new Error(result.error);
+                  throw new Error(result.serverError);
                 }
                 onSuccess?.(threadId);
               },

@@ -2,39 +2,23 @@ import { z } from "zod";
 import { createGenerateObject } from "@/utils/llms";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
 import {
+  type CreateRuleSchema,
   createRuleSchema,
-  type CreateRuleSchemaWithCategories,
-  getCreateRuleSchemaWithCategories,
 } from "@/utils/ai/rule/create-rule-schema";
 import { createScopedLogger } from "@/utils/logger";
 import { convertMentionsToLabels } from "@/utils/mention";
-import { getModel } from "@/utils/llms/model";
+import { getModelForUseCase, LlmUseCase } from "@/utils/llms/use-cases";
 
 const logger = createScopedLogger("ai-prompt-to-rules");
 
 export async function aiPromptToRules({
   emailAccount,
   promptFile,
-  availableCategories,
 }: {
   emailAccount: EmailAccountWithAI;
   promptFile: string;
-  availableCategories?: string[];
-}): Promise<CreateRuleSchemaWithCategories[]> {
-  function getSchema() {
-    if (availableCategories?.length) {
-      return getCreateRuleSchemaWithCategories(
-        availableCategories as [string, ...string[]],
-        emailAccount.account.provider,
-      );
-    }
-
-    return createRuleSchema(emailAccount.account.provider);
-  }
-
-  const system = getSystemPrompt({
-    hasSmartCategories: !!availableCategories?.length,
-  });
+}): Promise<CreateRuleSchema[]> {
+  const system = getSystemPrompt();
 
   const cleanedPromptFile = convertMentionsToLabels(promptFile);
 
@@ -44,19 +28,25 @@ export async function aiPromptToRules({
 ${cleanedPromptFile}
 </prompt>`;
 
-  const modelOptions = getModel(emailAccount.user, "chat");
+  const modelOptions = getModelForUseCase(
+    emailAccount.user,
+    LlmUseCase.PromptToRules,
+  );
 
   const generateObject = createGenerateObject({
-    userEmail: emailAccount.email,
+    emailAccount,
     label: "Prompt to rules",
     modelOptions,
+    promptHardening: { trust: "trusted" },
   });
 
   const aiResponse = await generateObject({
     ...modelOptions,
     prompt,
     system,
-    schema: z.object({ rules: z.array(getSchema()) }),
+    schema: z.object({
+      rules: z.array(createRuleSchema(emailAccount.account.provider)),
+    }),
   });
 
   if (!aiResponse.object) {
@@ -69,137 +59,31 @@ ${cleanedPromptFile}
   return rules;
 }
 
-function getSystemPrompt({
-  hasSmartCategories,
-}: {
-  hasSmartCategories: boolean;
-}) {
+function getSystemPrompt() {
   return `You are an AI assistant that converts email management rules into a structured format. Parse the given prompt and convert it into rules.
+
+Use short, concise rule names (preferably a single word). For example: 'Marketing', 'Newsletters', 'Urgent', 'Receipts'. Avoid verbose names like 'Archive and label marketing emails'.
 
 IMPORTANT: If a user provides a snippet, use that full snippet in the rule. Don't include placeholders unless it's clear one is needed.
 
+Use static conditions for exact deterministic matching, but keep them short and specific.
 You can use multiple conditions in a rule, but aim for simplicity.
 In most cases, you should use the "aiInstructions" and sometimes you will use other fields in addition.
 If a rule can be handled fully with static conditions, do so, but this is rarely possible.
+If the rule is only matching exact sender addresses or domains, put those in static.from and leave aiInstructions empty. Do not restate the sender in aiInstructions.
+If a sender/domain is combined with topic, content, or intent requirements, static.from is not enough; set conditionalOperator to AND and put the non-sender requirements in aiInstructions.
+If the user did not specify any sender or domain, leave static.from empty. Never fill it with placeholders like none, null, or @*.
+aiInstructions are only for semantic or content matching. Do not repeat sender lists, label names, or actions there.
+Example sender-only rule shape: static.from="@airbnb.com|@booking.com|@delta.com" and no aiInstructions.
 
-<examples>
-  <example>
-    <input>
-      When I get a newsletter, archive it and label it as "Newsletter"
-    </input>
-    <output>
-      [{
-        "name": "Label Newsletters",
-        "condition": {
-          "aiInstructions": "Apply this rule to newsletters"
-          ${
-            hasSmartCategories
-              ? `,
-            "categories": {
-              "categoryFilterType": "INCLUDE",
-              "categoryFilters": ["Newsletters"]
-            },
-            "conditionalOperator": "OR"`
-              : ""
-          }
-        },
-        "actions": [
-          {
-            "type": "ARCHIVE"
-          },
-          {
-            "type": "LABEL",
-            "fields": {
-              "label": "Newsletter"
-            }
-          }
-        ]
-      }]
-    </output>
-  </example>
+Output policy:
+- Return a JSON object only. No prose and no markdown.
+- The output must match the schema exactly: { "rules": [...] }.
+- Do not invent actions unsupported by the schema.
 
-  <example>
-    <input>
-      When someone mentions system outages or critical issues, forward to urgent-support@company.com and label as Urgent-Support
-    </input>
-    <output>
-      [{
-        "name": "Forward Urgent Emails",
-        "condition": {
-          "aiInstructions": "Apply this rule to emails mentioning system outages or critical issues"
-        },
-        "actions": [
-          {
-            "type": "FORWARD",
-            "fields": {
-              "to": "urgent-support@company.com"
-            }
-          },
-          {
-            "type": "LABEL",
-            "fields": {
-              "label": "Urgent-Support"
-            }
-          }
-        ]
-      }]
-    </output>
-  </example>
-
-  <example>
-    <input>
-      Label all urgent emails from company.com as "Urgent"
-    </input>
-    <output>
-      [{
-        "name": "Matt Urgent Emails",
-        "condition": {
-          "conditionalOperator": "AND",
-          "aiInstructions": "Apply this rule to urgent emails",
-          "static": {
-            "from": "@company.com"
-          }
-        },
-        "actions": [
-          {
-            "type": "LABEL",
-            "fields": {
-              "label": "Urgent"
-            }
-          }
-        ]
-      }]
-    </output>
-  </example>
-
-  <example>
-    <input>
-      If someone asks to set up a call, draft a reply with my calendar link: https://cal.com/example using the following format:
-      
-      """
-      Hi [name],
-      Thank you for your message. I'll respond within 2 hours.
-      Best,
-      Alice
-      """
-    </input>
-    <output>
-      [{
-        "name": "Reply to Call Requests",
-        "condition": {
-          "aiInstructions": "Apply this rule to emails from people asking to set up a call"
-        },
-        "actions": [
-          {
-            "type": "REPLY",
-            "fields": {
-              "content": "Hi {{name}},\nThank you for your message.\nI'll respond within 2 hours.\nBest,\nAlice"
-            }
-          }
-        ]
-      }]
-    </output>
-  </example>
-</examples>
+Behavior anchors (minimal):
+- "When I get a newsletter, archive it and label it as Newsletter" -> one rule with aiInstructions plus ARCHIVE and LABEL actions.
+- "Label urgent emails from @company.com as Urgent" -> prefer aiInstructions for urgency and use static.from for @company.com with AND logic when both are present.
+- "If someone asks to set up a call, reply with this template ..." -> use the provided template content in fields.content, preserving key wording.
 `;
 }

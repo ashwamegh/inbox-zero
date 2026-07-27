@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { withAuth } from "@/utils/middleware";
 import prisma from "@/utils/prisma";
-import { sumBy } from "lodash";
-import { ReferralStatus } from "@prisma/client";
+import sumBy from "lodash/sumBy";
+import { ReferralStatus } from "@/generated/prisma/enums";
 
 export type GetReferralStatsResponse = Awaited<
   ReturnType<typeof getReferralStats>
@@ -28,7 +28,7 @@ async function getReferralStats(userId: string) {
   return { stats };
 }
 
-export const GET = withAuth(async (request) => {
+export const GET = withAuth("referrals/stats", async (request) => {
   const userId = request.auth.userId;
   const result = await getReferralStats(userId);
   return NextResponse.json(result);

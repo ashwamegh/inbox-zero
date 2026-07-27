@@ -1,51 +1,119 @@
 import { createSafeActionClient } from "next-safe-action";
+import * as Sentry from "@sentry/nextjs";
 import { withServerActionInstrumentation } from "@sentry/nextjs";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { after } from "next/server";
 import { auth } from "@/utils/auth";
 import { createScopedLogger } from "@/utils/logger";
+import { flushLoggerSafely } from "@/utils/logger-flush";
 import prisma from "@/utils/prisma";
 import { isAdmin } from "@/utils/admin";
-import { SafeError } from "@/utils/error";
+import { captureException, SafeError } from "@/utils/error";
 import { env } from "@/env";
-
-// TODO: take functionality from `withActionInstrumentation` and move it here (apps/web/utils/actions/middleware.ts)
-
-const logger = createScopedLogger("safe-action");
+import { runWithAuditContext, setAuditContext } from "@/utils/audit/context";
 
 const baseClient = createSafeActionClient({
   defineMetadataSchema() {
     return z.object({ name: z.string() });
   },
+  defaultValidationErrorsShape: "flattened",
   handleServerError(error, { metadata, ctx, bindArgsClientInputs }) {
-    const context = ctx as any;
-    logger.error("Server action error:", {
-      metadata,
-      userId: context?.userId,
-      userEmail: context?.userEmail,
-      emailAccountId: context?.emailAccountId,
-      bindArgsClientInputs,
-      error: error.message,
+    const context = ctx as
+      | {
+          logger: ReturnType<typeof createScopedLogger>;
+          requestId: string;
+          userId?: string;
+          userEmail?: string;
+          emailAccountId?: string;
+        }
+      | undefined;
+
+    const logger =
+      context?.logger ??
+      createScopedLogger(metadata?.name || "safe-action").with({
+        requestId: context?.requestId,
+        userId: context?.userId,
+        userEmail: context?.userEmail,
+        emailAccountId: context?.emailAccountId,
+      });
+    // SafeErrors are expected user-facing rejections (shown to the client,
+    // never sent to Sentry), so they log as warnings
+    if (error instanceof SafeError) {
+      logger.warn("Server action error:", {
+        metadata,
+        bindArgsClientInputs,
+        error,
+      });
+    } else {
+      logger.error("Server action error:", {
+        metadata,
+        bindArgsClientInputs,
+        error,
+      });
+    }
+    after(async () => {
+      await flushLoggerSafely(logger, {
+        action: metadata?.name,
+        flushReason: "server-action-error",
+        requestId: context?.requestId,
+      });
     });
-    // Need a better way to handle this within logger itself
+
     if (env.NODE_ENV !== "production") {
       // biome-ignore lint/suspicious/noConsole: helpful for debugging
       console.error("Error in server action", error);
     }
     if (error instanceof SafeError) return error.message;
+
+    captureException(error, {
+      userId: context?.userId,
+      userEmail: context?.userEmail,
+      emailAccountId: context?.emailAccountId,
+      extra: {
+        metadata,
+        bindArgsClientInputs,
+        error: error.message,
+      },
+    });
+
     return "An unknown error occurred.";
   },
 }).use(async ({ next, metadata }) => {
-  logger.info("Calling action", { name: metadata?.name });
-  return next();
+  const requestId = randomUUID();
+  const logger = createScopedLogger(metadata.name).with({ requestId });
+
+  return runWithAuditContext(
+    {
+      actorType: "anonymous",
+      requestId,
+      source: metadata.name,
+    },
+    async () => {
+      after(async () => {
+        await flushLoggerSafely(logger, {
+          action: metadata.name,
+          requestId,
+        });
+      });
+
+      const result = await next({ ctx: { logger, requestId } });
+
+      if (result.validationErrors) {
+        logger.warn("Action validation error", {
+          action: metadata.name,
+          validationErrors: result.validationErrors,
+        });
+      }
+
+      return result;
+    },
+  );
 });
-// .schema(z.object({}), {
-//   handleValidationErrorsShape: async (ve) =>
-//     flattenValidationErrors(ve).fieldErrors,
-// });
 
 export const actionClient = baseClient
   .bindArgsSchemas<[emailAccountId: z.ZodString]>([z.string()])
-  .use(async ({ next, metadata, bindArgsClientInputs }) => {
+  .use(async ({ next, metadata, bindArgsClientInputs, ctx }) => {
     const session = await auth();
 
     if (!session?.user) throw new SafeError("Unauthorized");
@@ -54,6 +122,7 @@ export const actionClient = baseClient
 
     const userId = session.user.id;
     const emailAccountId = bindArgsClientInputs[0] as string;
+    setAuditContext({ actorType: "user", userId });
 
     // validate user owns this email
     const emailAccount = await prisma.emailAccount.findUnique({
@@ -68,45 +137,101 @@ export const actionClient = baseClient
         },
       },
     });
-    if (!emailAccount || emailAccount?.account.userId !== userId)
+    if (!emailAccount || emailAccount?.account.userId !== userId) {
+      // expected with stale client state (e.g. account removed or switched)
+      ctx.logger.warn("Unauthorized", metadata);
       throw new SafeError("Unauthorized");
+    }
 
-    return withServerActionInstrumentation(metadata?.name, async () => {
-      return next({
-        ctx: {
-          userId,
-          userEmail,
-          session,
-          emailAccountId,
-          emailAccount,
-          provider: emailAccount.account.provider,
-        },
-      });
+    Sentry.setTag("emailAccountId", emailAccountId);
+    Sentry.setUser({ id: userId, email: userEmail });
+    setAuditContext({
+      actorType: "email_account",
+      emailAccountId,
+      userId,
+    });
+
+    const logger = ctx.logger.with({
+      userId,
+      userEmail,
+      emailAccountId,
+      provider: emailAccount.account.provider,
+    });
+
+    return runInstrumentedAction({
+      actionName: metadata.name,
+      logger,
+      run: () =>
+        next({
+          ctx: {
+            ...ctx,
+            logger,
+            userId,
+            userEmail,
+            session,
+            emailAccountId,
+            emailAccount,
+            provider: emailAccount.account.provider,
+          },
+        }),
     });
   });
 
 // doesn't bind to a specific email
-export const actionClientUser = baseClient.use(async ({ next, metadata }) => {
-  const session = await auth();
+export const actionClientUser = baseClient.use(
+  async ({ next, metadata, ctx }) => {
+    const session = await auth();
 
-  if (!session?.user) throw new SafeError("Unauthorized");
+    if (!session?.user) {
+      // expected when the session has expired or the user logged out
+      ctx.logger.warn("Unauthorized", metadata);
+      throw new SafeError("Unauthorized");
+    }
 
-  const userId = session.user.id;
+    const userId = session.user.id;
+    const userEmail = session.user.email;
+    setAuditContext({ actorType: "user", userId });
 
-  return withServerActionInstrumentation(metadata?.name, async () => {
-    return next({
-      ctx: { userId },
+    const logger = ctx.logger.with({ userId, userEmail });
+
+    return runInstrumentedAction({
+      actionName: metadata.name,
+      logger,
+      run: () =>
+        next({
+          ctx: { ...ctx, userId, userEmail, logger },
+        }),
     });
-  });
-});
+  },
+);
 
-export const adminActionClient = baseClient.use(async ({ next, metadata }) => {
-  const session = await auth();
-  if (!session?.user) throw new SafeError("Unauthorized");
-  if (!isAdmin({ email: session.user.email }))
-    throw new SafeError("Unauthorized");
+export const adminActionClient = baseClient.use(
+  async ({ next, metadata, ctx }) => {
+    const session = await auth();
+    if (!session?.user) throw new SafeError("Unauthorized");
+    if (!isAdmin({ email: session.user.email }))
+      throw new SafeError("Unauthorized");
+    setAuditContext({ actorType: "admin", userId: session.user.id });
 
-  return withServerActionInstrumentation(metadata?.name, async () => {
-    return next({ ctx: {} });
-  });
-});
+    const logger = ctx.logger.with({ admin: true });
+
+    return runInstrumentedAction({
+      actionName: metadata.name,
+      logger,
+      run: () => next({ ctx: { ...ctx, logger } }),
+    });
+  },
+);
+
+function runInstrumentedAction<T>({
+  actionName,
+  logger,
+  run,
+}: {
+  actionName: string;
+  logger: ReturnType<typeof createScopedLogger>;
+  run: () => Promise<T>;
+}) {
+  logger.info("Calling action");
+  return withServerActionInstrumentation(actionName, run);
+}

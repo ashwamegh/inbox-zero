@@ -2,8 +2,6 @@
 
 import { useCallback, useRef, useState, useMemo } from "react";
 import { useQueryState } from "nuqs";
-import countBy from "lodash/countBy";
-import { capitalCase } from "capital-case";
 import Link from "next/link";
 import { toast } from "sonner";
 import { ChevronsDownIcon } from "lucide-react";
@@ -11,7 +9,6 @@ import { ActionButtonsBulk } from "@/components/ActionButtonsBulk";
 import { Celebration } from "@/components/Celebration";
 import { EmailPanel } from "@/components/email-list/EmailPanel";
 import type { Thread } from "@/components/email-list/types";
-import { useExecutePlan } from "@/components/email-list/PlanActions";
 import { Tabs } from "@/components/Tabs";
 import { GroupHeading } from "@/components/GroupHeading";
 import { Checkbox } from "@/components/Checkbox";
@@ -53,16 +50,10 @@ export function List({
   const { emailAccountId } = useAccount();
   const [selectedTab] = useQueryState("tab", { defaultValue: "all" });
 
-  const categories = useMemo(() => {
-    return countBy(
-      emails,
-      (email) => email.category?.category || "Uncategorized",
-    );
-  }, [emails]);
-
-  const planned = useMemo(() => {
-    return emails.filter((email) => email.plan?.rule);
-  }, [emails]);
+  const planned = useMemo(
+    () => emails.filter((email) => email.plan?.rule),
+    [emails],
+  );
 
   const tabs = useMemo(
     () => [
@@ -76,27 +67,19 @@ export function List({
         value: "planned",
         href: "/mail?tab=planned",
       },
-      ...Object.entries(categories).map(([category, count]) => ({
-        label: `${capitalCase(category)} (${count})`,
-        value: category,
-        href: `/mail?tab=${category}`,
-      })),
     ],
-    [categories, planned],
+    [planned],
   );
 
   // only show tabs if there are planned emails or categorized emails
-  const showTabs = !!(planned.length || emails.find((email) => email.category));
+  const showTabs = !!planned.length;
 
   const filteredEmails = useMemo(() => {
     if (selectedTab === "planned") return planned;
 
     if (selectedTab === "all") return emails;
 
-    if (selectedTab === "Uncategorized")
-      return emails.filter((email) => !email.category?.category);
-
-    return emails.filter((email) => email.category?.category === selectedTab);
+    return emails;
   }, [emails, selectedTab, planned]);
 
   return (
@@ -151,7 +134,7 @@ export function List({
           {type === "inbox" ? (
             <Celebration message={"You made it to Inbox Zero!"} />
           ) : (
-            <div className="flex items-center justify-center font-cal text-2xl text-primary">
+            <div className="flex items-center justify-center font-title text-2xl text-primary">
               No emails to display
             </div>
           )}
@@ -199,9 +182,10 @@ export function EmailList({
     setSelectedRows((s) => ({ ...s, [id]: !s[id] }));
   }, []);
 
-  const isAllSelected = useMemo(() => {
-    return threads.every((thread) => selectedRows[thread.id]);
-  }, [threads, selectedRows]);
+  const isAllSelected = useMemo(
+    () => threads.every((thread) => selectedRows[thread.id]),
+    [threads, selectedRows],
+  );
 
   const onToggleSelectAll = useCallback(() => {
     const newState = { ...selectedRows };
@@ -296,28 +280,6 @@ export function EmailList({
     setOpenThreadId(prevOrNextRowId);
   }
 
-  const { executingPlan, rejectingPlan, executePlan, rejectPlan } =
-    useExecutePlan(refetch);
-
-  const onApplyAction = useCallback(
-    async (action: (thread: Thread) => void) => {
-      for (const [threadId, selected] of Object.entries(selectedRows)) {
-        if (!selected) continue;
-        const thread = threads.find((t) => t.id === threadId);
-        if (thread) action(thread);
-      }
-      refetch();
-    },
-    [threads, selectedRows, refetch],
-  );
-
-  const onAiApproveBulk = useCallback(async () => {
-    onApplyAction(executePlan);
-  }, [onApplyAction, executePlan]);
-  const onAiRejectBulk = useCallback(async () => {
-    onApplyAction(rejectPlan);
-  }, [onApplyAction, rejectPlan]);
-
   const onArchiveBulk = useCallback(async () => {
     toast.promise(
       async () => {
@@ -379,8 +341,7 @@ export function EmailList({
           .filter(([, selected]) => selected)
           .map(([id]) => threads.find((t) => t.id === id)!);
 
-        runAiRules(emailAccountId, selectedThreads, false);
-        // runAiRules(threadIds, () => refetch(threadIds));
+        await runAiRules(emailAccountId, selectedThreads, false);
       },
       {
         success: "Running AI rules...",
@@ -396,20 +357,22 @@ export function EmailList({
       {!(isEmpty && hideActionBarWhenEmpty) && (
         <div className="flex items-center border-b border-l-4 border-border bg-background px-4 py-1">
           <div className="pl-1">
-            <Checkbox checked={isAllSelected} onChange={onToggleSelectAll} />
+            <Checkbox
+              label={
+                isAllSelected ? "Deselect all emails" : "Select all emails"
+              }
+              checked={isAllSelected}
+              onChange={onToggleSelectAll}
+            />
           </div>
           <div className="ml-2">
             <ActionButtonsBulk
               isPlanning={false}
               isArchiving={false}
               isDeleting={false}
-              isApproving={false}
-              isRejecting={false}
               onPlanAiAction={onPlanAiBulk}
               onArchive={onArchiveBulk}
               onDelete={onTrashBulk}
-              onApprove={onAiApproveBulk}
-              onReject={onAiRejectBulk}
             />
           </div>
           {/* <div className="ml-auto gap-1 flex items-center">
@@ -448,7 +411,7 @@ export function EmailList({
         <ResizeGroup
           left={
             <ul
-              className="divide-y divide-border overflow-y-auto scroll-smooth"
+              className="min-w-0 divide-y divide-border overflow-x-hidden overflow-y-auto scroll-smooth"
               ref={listRef}
             >
               {threads.map((thread) => {
@@ -487,10 +450,6 @@ export function EmailList({
                     onClick={onOpen}
                     onPlanAiAction={onPlanAiAction}
                     onArchive={onArchive}
-                    executePlan={executePlan}
-                    rejectPlan={rejectPlan}
-                    executingPlan={executingPlan[thread.id]}
-                    rejectingPlan={rejectingPlan[thread.id]}
                     refetch={refetch}
                   />
                 );
@@ -525,10 +484,6 @@ export function EmailList({
                 onArchive={onArchive}
                 advanceToAdjacentThread={advanceToAdjacentThread}
                 close={closePanel}
-                executePlan={executePlan}
-                rejectPlan={rejectPlan}
-                executingPlan={executingPlan[openThreadId]}
-                rejectingPlan={rejectingPlan[openThreadId]}
                 refetch={refetch}
               />
             )
@@ -552,11 +507,16 @@ function ResizeGroup({
 
   return (
     <ResizablePanelGroup direction={isMobile ? "vertical" : "horizontal"}>
-      <ResizablePanel style={{ overflow: "auto" }} defaultSize={50} minSize={0}>
+      <ResizablePanel
+        style={{ overflow: "auto" }}
+        defaultSize={50}
+        minSize={0}
+        className="min-w-0"
+      >
         {left}
       </ResizablePanel>
       <ResizableHandle withHandle />
-      <ResizablePanel defaultSize={50} minSize={0}>
+      <ResizablePanel defaultSize={50} minSize={0} className="min-w-0">
         {right}
       </ResizablePanel>
     </ResizablePanelGroup>
